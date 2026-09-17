@@ -20,11 +20,14 @@ simple, keep it lean.
 - Multiprocessing / parallel execution (also handled separately)
 - Aiming — shooting is always straight up, no direction control
 
-(Monsters, shooting, and breakable platforms ARE in scope as of `plan/M7.md` —
-see the updated interface, state vector, and constants below, all of which
-already reflect this. If you're re-reading this after M1-M6 are done, note the
-state vector grew from 12 to 23 floats and `action` is now a 2-element list,
-not one float.)
+(Monsters, shooting, and breakable platforms ARE in scope as of `plan/M7.md`
+through `plan/M10.md` — see the updated interface, state vector, and constants
+below, which describe the FINAL target shape once all of M7-M10 are done, same
+as this file always described the target for M1-M6. Built incrementally:
+M7 adds breakable platforms (state → 17 floats), M8 adds monsters (→ 23
+floats), M9 changes `action` from one float to `[steer, shoot]` and adds
+bullets, M10 updates `demo_render.py`. Go to whichever `plan/M*.md` is next
+after your last completed one.)
 
 **Deliverables (two files):**
 - `env.py` — the game environment. Pure Python + `random` only. No external
