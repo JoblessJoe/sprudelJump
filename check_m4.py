@@ -20,7 +20,7 @@ e.step = step_wrap
 prev = 0
 ok_monotonic = True
 for i in range(1, 3001):
-    s, f, d = e.step(0.5)
+    s, f, d = e.step([0.5, 0.0])
     if i % 300 == 0:
         print(i, "H=" + str(round(f, 1)))
     if f < prev - 1e-9:

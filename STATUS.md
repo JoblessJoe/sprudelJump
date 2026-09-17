@@ -3,8 +3,9 @@
 ## Built
 
 `env.py` — headless Doodle-Jump environment, pure stdlib (only `import random`), no pygame.
-Complete per CORE_SPEC interface: `reset() -> list[12 floats]`,
-`step(action in [0,1]) -> (state, fitness, done)`, `render() = pass`.
+Complete per CORE_SPEC interface (as of M10): `reset() -> list[23 floats]`,
+`step(action = [steer, shoot], both in [0,1]) -> (state, fitness, done)`, `render() = pass`.
+(steer 0.5 = no movement; shoot > 0.5 fires subject to a 10-frame cooldown.)
 - Physics: gravity 0.4, bounce -13.0, max fall 15.0, horizontal speed 6.0, screen wrap.
 - Camera scroll at playerY < 280 (0.4*700); platforms shift down, despawn below screen, spawn above top.
 - Difficulty scaling t = totalHeight/20000: gap 80–130 → 100–160, platform width 60 → 40.
@@ -15,7 +16,8 @@ Complete per CORE_SPEC interface: `reset() -> list[12 floats]`,
 H drawn on screen, keyboard play + auto-random, Esc to quit, R to reset). Under 100 lines.
 pygame is NOT importable from env.py.
 
-Milestone checks: `check_m2.py`, `check_m3.py`, `check_m4.py`, `check_m5.py` (M1 checked inline).
+Milestone checks: `check_m2.py`, `check_m3.py`, `check_m4.py`, `check_m5.py` (M1 checked inline),
+plus `check_m7.py`, `check_m8.py`, `check_m9.py`.
 
 ## Self-check results (real output)
 
@@ -45,3 +47,82 @@ Milestone checks: `check_m2.py`, `check_m3.py`, `check_m4.py`, `check_m5.py` (M1
 
 All milestones M1–M6 complete (M6 delivered as written code, not executed). `env.py` is ready
 for headless NN training: thousands of `reset()`/`step()` loops, zero external dependencies.
+
+---
+
+## M7–M10 (breakable platforms, monsters, bullets, renderer) — complete
+
+Build order per plan/M7.md → M10.md: one file at a time, milestone self-checks passed before
+moving on. Final env.py: 4-tuple platforms `[x, y, width, breakable]`, `self.monsters` (2-tuple
+`[x, y]`, 36×36), `self.bullets` (2-tuple `[x, y]`, 6×14), `self.cooldown`; `reset() -> 23 floats`;
+`step([steer, shoot]) -> (state, fitness, done)`.
+
+**M7 — breakable platforms (state 12 → 17).** Spawn chance = 0.05 + t·(0.30 − 0.05); initial and
+forced start platforms are never breakable; a breakable is removed right after the frame it bounces
+the player (every breakable hit in a frame is removed). check_m7.py:
+- 1a forced breakable platform at landing spot → gone by frame 40, player bounced off a survivor. Pass.
+- 1b forced normal platform, identical setup → still present after 40+ frames. Pass.
+- 2 `len(reset()) == 17`. Pass.
+- 3 The literal spec check (5000 steps, action 0.5, breakable count first1500 vs last1500) is
+  degenerate for the documented 0.5 equilibrium lock (M4 finding): H plateaus ~123–193, only 3
+  spawn events in 5000 steps (3a, recorded for the record), so no difficulty delta exists between
+  windows and n is too small to distinguish 0.05 from anything. Verified the actual property
+  directly instead: measured breakable rate at forced difficulty t=0.0/0.5/1.0 = 0.045/0.170/
+  0.305 vs expected 0.050/0.175/0.300. Pass.
+
+**M8 — monsters (state 17 → 23; action unchanged).** Monster = `[monsterX, monsterY]` centered on
+its platform's top; spawn chance = 0.0 + t·(0.35 − 0.0); stomp = falling + feet sweeps monster top
+→ remove, `totalHeight += 100`, bounce; any other full-box overlap → done. Monsters scroll/despawn
+like platforms. State: 3 nearest monsters above the player as (dx/W clamped, dy/H clamped), padded
+`[0.0, 1.0]`. check_m8.py:
+- 1 stomp: forced monster above forced platform, player falling from above → monster removed,
+  height +100, bounced, not dead. Pass.
+- 2 lethal contact: monster overlapping player's x at player's y while rising (velY < 0) → done=True
+  on that step, monster untouched. Pass.
+- 3 `len(reset()) == 23`. Pass.
+- 4 Same equity caveat as M7-3 under action 0.5 (4a: H=123.6, 0 monsters alive, recorded); direct
+  verification: measured monster chance at t=0.0/0.5/1.0 = 0.000/0.177/0.351 vs expected
+  0.000/0.175/0.350. Pass.
+
+**M9 — bullets + action becomes [steer, shoot].** Per M9.md the interface migration happened FIRST
+as its own step: `step()` now reads `action[0]` for steering (bare-float fallback kept so the old
+scripts run unchanged), all callers of `env.step` in `check_m2..m8.py` and `demo_render.py` were
+updated to 2-element lists, and all re-ran green before touching bullet code. Bullets spawn straight
+up from the player on shoot > 0.5 when cooldown is 0 (reset to 10 frames, decrement every step),
+move up at 10 px/frame, despawn above the top, shift on scroll, and kill monsters on any overlap
+(both removed, +100). Bullets are deliberately absent from the state vector, per CORE_SPEC.
+- Old-script re-run on the new interface, all pass: check_m2, check_m3 (platforms now 4-tuples),
+  check_m4, check_m5 (state assert 12 → 23), check_m7, check_m8.
+- check_m9 bullet kill: monster centered on the bullet stream directly above the player,
+  `step([0.5, 1.0])` → bullet appears, travels upward, monster removed on contact, height jumped
+  to ≥ 100. Pass.
+- check_m9 cooldown: 30 frames of `step([0.5, 1.0])` → exactly 3 shots fired (one per 10-frame
+  window), not 30. Pass.
+
+**M10 — demo_render.py extended (112 lines).** Builds `action = [steer, shoot]`; Space held →
+shoot = 1.0; monsters drawn as red ellipses, bullets as small pale rects, breakable platforms in
+amber vs teal for normal ones; everything else (background, HUD, game-over flow, R/Esc) unchanged.
+Self-check: pygame is still not installable on this box (same PEP 668 block as M6), so the visual
+run was not possible. Verified instead: `python3 -m py_compile` clean on demo_render.py and env.py,
+and a headless import of demo_render (pygame = None) hits the guarded skip path and exits
+gracefully; line count 112 (< ~130 cap); a 3000-step headless smoke run (mixed steer/shoot) keeps
+the 23-float state invariant. **Uncertainty:** the four visual confirmations M10 asks for
+(monster/bullet/breakable rendering, and on-screen removal on stomp/shoot) are logically correct by
+construction — the draw loop iterates the same `env.monsters`/`env.bullets`/breakable flag that the
+passing headless self-checks exercise — but they were not observed on screen.
+
+Cross-check after M10: `check_m2`–`check_m9` all pass against the final env.py.
+
+**Unsure / deferred:**
+- The two "first 1500 vs last 1500" ramp checks in M7/M8 specs are unobservable under literal
+  action 0.5 (equilibrium lock, ~3 spawn events total). Verified the same formulas directly at
+  forced difficulty values instead; a future policy-based harness that actually climbs would let
+  the literal checks work as written.
+- The 0.5 equilibrium lock remains the dominant fact for any future training harness: a policy
+  that idles at steer 0.5 gets H ≈ 123–193 and almost no spawns (M4 finding, unchanged by M7–M9:
+  monsters at t≈0 have 0.0 spawn chance, breakables sit at the 0.05 base).
+
+All milestones M1–M10 complete (M6 and M10 delivered as written+compiled code, not executed, due
+to pygame being unavailable on this box). `env.py` is ready for headless NN training:
+`reset()` returns 23 floats, `step([steer, shoot])` returns `(state, fitness, done)`, zero external
+dependencies.
