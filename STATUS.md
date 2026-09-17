@@ -172,14 +172,14 @@ Nothing in `env.py` or the env interface changed; this pass only touches `art.py
 
 ## Sound pass (post-M10, demo only)
 
-First pass synthesized chiptune SFX in  from math at load — user
+First pass synthesized chiptune SFX in `sounds.py` from math at load — user
 reported them as bugged, replaced by real files: 8-bit WAVs from the CC0
 (public domain) "8-bit Platformer SFX" pack (MoxieCat, FamiTracker export,
-opengameart.org/content/8-bit-platformer-sfx-0), downloaded to  and
+opengameart.org/content/8-bit-platformer-sfx-0), downloaded to `sounds/` and
 trimmed to punchy lengths with a 30 ms fade:
 bounce<-spring, shoot<-throw, stomp<-warlockhurt, hit<-warlockexploding,
-crack<-trapdoor, die<-playerhurt.  builds the mixer bank from
- (returns {} headless);  triggers by diffing env
+crack<-trapdoor, die<-playerhurt. `sounds.load()` builds the mixer bank from
+`sounds/*.wav` (returns {} headless); `demo_render.py` triggers by diffing env
 state: stomp when a monster vanishes and feet rise, bounce otherwise, hit when
 a monster vanishes without a rise (bullet), crack on platform removal, die on
-done. env interface unchanged. WAV validity verified via  + RIFF parse.
+done. env interface unchanged. WAV validity verified via `file` + RIFF parse.
