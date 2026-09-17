@@ -106,7 +106,6 @@ def main():
     spaceWas = False
     sndBank = sounds.load()
     prevVelY = env.velY
-    prevLen = (len(env.platforms), len(env.monsters))
 
     def sfx(name):
         if name in sndBank:
@@ -194,16 +193,18 @@ def main():
         # jump arc and used to fire the bounce sfx on every one of those
         # frames (a machine-gun of plops instead of one bounce per landing).
         bounced = env.velY < 0 <= prevVelY
-        broke = prevLen[0] > len(env.platforms)
-        monGone = prevLen[1] > len(env.monsters)
-        prevLen = (len(env.platforms), len(env.monsters))
-        if monGone and bounced:
+        # env.stompCount/bulletKillCount/brokenCount are explicit per-step
+        # event counts, not list-length diffs -- platforms and monsters also
+        # leave their lists when they scroll off the bottom of the screen,
+        # which used to fire "crack"/"hit" on that routine cleanup too (the
+        # phantom "explosion" a beat after every bounce).
+        if env.stompCount > 0:
             sfx("stomp")           # stomping a monster (bounce + squish)
         elif bounced:
             sfx("bounce")          # platform bounce
-        if monGone and not bounced:
-            sfx("hit")             # bullet kill (no bounce happens)
-        if broke:
+        if env.bulletKillCount > 0:
+            sfx("hit")             # bullet kill
+        if env.brokenCount > 0:
             sfx("crack")
         prevVelY = env.velY
         if done:

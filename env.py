@@ -43,6 +43,9 @@ class SprudelJumpEnv:
         self.monsters = []
         self.bullets = []
         self.cooldown = 0
+        self.brokenCount = 0
+        self.stompCount = 0
+        self.bulletKillCount = 0
         y = SCREEN_HEIGHT
         while y > 0:
             self.platforms.append([random.uniform(0, SCREEN_WIDTH - PLATFORM_WIDTH), y, PLATFORM_WIDTH, False])
@@ -51,6 +54,13 @@ class SprudelJumpEnv:
         return self._getState()
 
     def step(self, action):
+        # Per-step event counts for renderers/SFX. Distinct from list-length
+        # diffs on self.platforms/self.monsters, which also shrink when
+        # entries simply scroll off the bottom of the screen -- diffing
+        # length would fire "broke"/"killed" on that routine cleanup too.
+        self.brokenCount = 0
+        self.stompCount = 0
+        self.bulletKillCount = 0
         steer = action[0] if isinstance(action, (list, tuple)) else action
         self.playerX += (steer - 0.5) * 2 * HORIZONTAL_SPEED
         if self.playerX < -PLAYER_WIDTH:
@@ -70,6 +80,7 @@ class SprudelJumpEnv:
                         toRemove.append(p)
             for p in toRemove:
                 self.platforms.remove(p)
+            self.brokenCount = len(toRemove)
         monsterGone = []
         fatal = False
         for m in self.monsters:
@@ -81,6 +92,7 @@ class SprudelJumpEnv:
                 fatal = True
         for m in monsterGone:
             self.monsters.remove(m)
+        self.stompCount = len(monsterGone)
         shoot = action[1] if isinstance(action, (list, tuple)) else 0.0
         if shoot > 0.5 and self.cooldown == 0:
             self.bullets.append([self.playerX + PLAYER_WIDTH / 2 - BULLET_WIDTH / 2, self.playerY])
@@ -102,6 +114,7 @@ class SprudelJumpEnv:
             self.bullets.remove(b)
         for m in monstersHit:
             self.monsters.remove(m)
+        self.bulletKillCount = len(monstersHit)
         if self.playerY < SCROLL_THRESHOLD_Y:
             scrollAmount = SCROLL_THRESHOLD_Y - self.playerY
             self.totalHeight += scrollAmount

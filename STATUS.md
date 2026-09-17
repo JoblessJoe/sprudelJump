@@ -224,3 +224,32 @@ correctly edge-triggered (list-length diffs / keydown edges) and untouched.
 `python3 -m py_compile demo_render.py` passes. **Caveat unchanged:** still
 not heard on this box (no display/audio device here); logic verified via
 instrumented headless replay, not by ear.
+
+## Phantom "crack"/"hit" fix (same bug class, one level down)
+
+After the bounce fix, user reported a random "explosion" sound on every
+bounce, slightly delayed. Cause: `demo_render.py`'s `broke`/`monGone` flags
+were list-length diffs (`prevLen[0] > len(env.platforms)`, same for
+monsters), but `env.py` shrinks those lists for two unrelated reasons —
+an actual break/kill, **and** routine cleanup when an entry scrolls off
+the bottom of the screen (`p[1] <= SCREEN_HEIGHT` filter, every step).
+Diffing length can't tell those apart, so "crack" (explodingplatform.wav,
+sounds like an explosion) fired whenever an old platform scrolled off
+the bottom — which happens continuously while climbing, a beat after
+whatever bounce caused the scroll. Same latent bug applied to `monGone`
+for monsters that scroll off missed (would misfire stomp/hit).
+
+Fix: `env.py` now tracks explicit per-step event counts —
+`brokenCount`/`stompCount`/`bulletKillCount`, reset to 0 at the top of
+`step()` and set from the actual break/stomp/bullet-kill code paths
+(`len(toRemove)`, `len(monsterGone)`, `len(monstersHit)`), initialized in
+`reset()` too. `demo_render.py` reads these instead of diffing list
+lengths; `prevLen` tracking removed. Still purely additive to `env.py` —
+`reset()`/`step()` return shapes unchanged, so the external training
+harness contract holds. Verified: forced a breakable platform under the
+player in a headless run — `brokenCount` fires exactly once, on the exact
+landing frame, and stays silent for 200 more frames while unrelated
+platforms scroll off-screen (old list-diff logic would have double-fired
+on that scroll cleanup with zero real breaks in a similar run). Re-ran
+`check_m2.py`-`check_m9.py`: all still pass, `env.py`'s external behavior
+is unchanged.
