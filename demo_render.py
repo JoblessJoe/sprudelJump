@@ -1,5 +1,3 @@
-import random
-
 try:
     import pygame
 except ImportError:
@@ -30,6 +28,7 @@ def main():
 
     sync()
     run = True
+    clock = pygame.time.Clock()
     while run:
         step_action = None
         for event in pygame.event.get():
@@ -47,12 +46,12 @@ def main():
         elif keys[pygame.K_RIGHT]:
             step_action = 1.0
         else:
-            step_action = random.random()
+            step_action = 0.5
         s, f, done = env.step(step_action)
         if done:
             env.reset()
         sync()
-        pygame.time.Clock().tick(FPS)
+        clock.tick(FPS)
 
     pygame.quit()
 
