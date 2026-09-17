@@ -105,7 +105,7 @@ def main():
     gameOverUntil = 0
     spaceWas = False
     sndBank = sounds.load()
-    prevFeet = env.playerY + PLAYER_HEIGHT
+    prevVelY = env.velY
     prevLen = (len(env.platforms), len(env.monsters))
 
     def sfx(name):
@@ -188,20 +188,24 @@ def main():
         s, f, done = env.step([steer, shoot])
         if shoot:
             sfx("shoot")
-        feet = env.playerY + PLAYER_HEIGHT
-        feetUp = feet < prevFeet
+        # A bounce is a single-frame velocity-sign flip (gravity-pulled fall
+        # becomes an upward launch), not "feet above where they were last
+        # frame" -- that stays true for the whole ~20-frame rise of every
+        # jump arc and used to fire the bounce sfx on every one of those
+        # frames (a machine-gun of plops instead of one bounce per landing).
+        bounced = env.velY < 0 <= prevVelY
         broke = prevLen[0] > len(env.platforms)
         monGone = prevLen[1] > len(env.monsters)
         prevLen = (len(env.platforms), len(env.monsters))
-        if monGone and feetUp:
+        if monGone and bounced:
             sfx("stomp")           # stomping a monster (bounce + squish)
-        elif feetUp:
+        elif bounced:
             sfx("bounce")          # platform bounce
-        if monGone and not feetUp:
+        if monGone and not bounced:
             sfx("hit")             # bullet kill (no bounce happens)
         if broke:
             sfx("crack")
-        prevFeet = feet
+        prevVelY = env.velY
         if done:
             sfx("die")
             score = round(f)

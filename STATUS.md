@@ -194,3 +194,33 @@ env interface unchanged. WAV validity verified via `file` + RIFF parse,
 all six distinct by md5. **Honest caveat:** audio was not heard on this box
 (no pygame/display) — loudness balance is by construction (identical
 peaks); perception judged on user's Mac.
+
+## Bounce-sfx trigger bug fix (post-sound-pass)
+
+User reported the sounds as "super bugged" and not matching the game. The
+WAV assets themselves were already genuine (re-verified in this pass: fetched
+https://sounds.spriters-resource.com/arcade/doodlejumparcade/asset/450387/
+directly, confirmed the real zip's `fx/DJ_Jump.wav`, `rocket.wav`,
+`jumponmonster.wav`, `monster-crash.wav`, `explodingplatform.wav`,
+`Start_Failure.wav` match the durations/content already in `sounds/`) — the
+bug was in `demo_render.py`'s trigger logic, not the assets.
+
+`feetUp = feet < prevFeet` was true for **every frame** of a jump's ~20-30
+frame rising arc (gravity-integrated position keeps decreasing until the
+apex), not just the bounce frame, so `sfx("bounce")` fired on almost every
+frame of every ascent — a headless replay (4000 frames, seeded) showed the
+old logic firing bounce **1979** times vs. the physically-correct **63**
+landings, a ~31x overlap rate. That's the "super bugged"/machine-gun sound.
+
+Fix: detect the actual physics event — `env.velY` flips from non-negative
+(falling under gravity) to negative (BOUNCE_VELOCITY, launched) on exactly
+the one frame a collision happens, since gravity monotonically increases
+velY every other frame. `bounced = env.velY < 0 <= prevVelY` replaces
+`feetUp` for both the stomp/bounce and hit branches; `prevFeet` tracking
+removed, replaced with `prevVelY`. Re-ran the same seeded 4000-frame replay
+with the fix: 63 bounce events, matching the expected ~65-frame jump period
+(2 * BOUNCE_VELOCITY / GRAVITY). `crack`/`die`/`shoot` triggers were already
+correctly edge-triggered (list-length diffs / keydown edges) and untouched.
+`python3 -m py_compile demo_render.py` passes. **Caveat unchanged:** still
+not heard on this box (no display/audio device here); logic verified via
+instrumented headless replay, not by ear.
