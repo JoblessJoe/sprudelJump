@@ -193,8 +193,10 @@ def main():
         broke = prevLen[0] > len(env.platforms)
         monGone = prevLen[1] > len(env.monsters)
         prevLen = (len(env.platforms), len(env.monsters))
-        if feetUp:
-            sfx("bounce")          # platform bounce or monster stomp
+        if monGone and feetUp:
+            sfx("stomp")           # stomping a monster (bounce + squish)
+        elif feetUp:
+            sfx("bounce")          # platform bounce
         if monGone and not feetUp:
             sfx("hit")             # bullet kill (no bounce happens)
         if broke:
