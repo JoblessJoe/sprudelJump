@@ -7,6 +7,7 @@ except ImportError:
 import random
 
 import art
+import sounds
 from env import (SprudelJumpEnv, SCREEN_WIDTH, SCREEN_HEIGHT,
                  PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_HEIGHT,
                  BULLET_WIDTH, BULLET_HEIGHT)
@@ -103,6 +104,14 @@ def main():
     newBest = False
     gameOverUntil = 0
     spaceWas = False
+    sndBank = sounds.load()
+    prevFeet = env.playerY + PLAYER_HEIGHT
+    prevLen = (len(env.platforms), len(env.monsters))
+
+    def sfx(name):
+        if name in sndBank:
+            sndBank[name].play()
+
 
     def draw_world():
         screen.blit(background, (0, 0))
@@ -177,7 +186,22 @@ def main():
         else:
             steer = 0.5
         s, f, done = env.step([steer, shoot])
+        if shoot:
+            sfx("shoot")
+        feet = env.playerY + PLAYER_HEIGHT
+        feetUp = feet < prevFeet
+        broke = prevLen[0] > len(env.platforms)
+        monGone = prevLen[1] > len(env.monsters)
+        prevLen = (len(env.platforms), len(env.monsters))
+        if feetUp:
+            sfx("bounce")          # platform bounce or monster stomp
+        if monGone and not feetUp:
+            sfx("hit")             # bullet kill (no bounce happens)
+        if broke:
+            sfx("crack")
+        prevFeet = feet
         if done:
+            sfx("die")
             score = round(f)
             newBest = score > best and score > 0
             best = max(best, score)
