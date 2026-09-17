@@ -173,13 +173,24 @@ Nothing in `env.py` or the env interface changed; this pass only touches `art.py
 ## Sound pass (post-M10, demo only)
 
 First pass synthesized chiptune SFX in `sounds.py` from math at load — user
-reported them as bugged, replaced by real files: 8-bit WAVs from the CC0
-(public domain) "8-bit Platformer SFX" pack (MoxieCat, FamiTracker export,
-opengameart.org/content/8-bit-platformer-sfx-0), downloaded to `sounds/` and
-trimmed to punchy lengths with a 30 ms fade:
-bounce<-spring, shoot<-throw, stomp<-warlockhurt, hit<-warlockexploding,
-crack<-trapdoor, die<-playerhurt. `sounds.load()` builds the mixer bank from
-`sounds/*.wav` (returns {} headless); `demo_render.py` triggers by diffing env
-state: stomp when a monster vanishes and feet rise, bounce otherwise, hit when
-a monster vanishes without a rise (bullet), crack on platform removal, die on
-done. env interface unchanged. WAV validity verified via `file` + RIFF parse.
+reported them bugged. Second pass: MoxieCat CC0 8-bit pack (OpenGameArt) —
+user reported the bounce "too magical, too loud, drowned everything else".
+Final pass (current): **authentic WAVs ripped from Doodle Jump Arcade**,
+collected by LeDerpSillyGoober, hosted on The Sounds Resource (fan rip of
+the 2009 game — demo-only assets, do not ship commercially):
+https://sounds.spriters-resource.com/arcade/doodlejumparcade/asset/450387/
+
+All files converted to 16-bit mono 44100 Hz, trimmed to a punchy active
+region (5 ms head, 15 ms fade-out), and **normalized to the same -3 dBFS
+peak** so the frequent bounce no longer drowns out rarer events:
+bounce<-DJ_Jump (0.09 s plop), shoot<-rocket launch burst (0.35 s),
+stomp<-jumponmonster (1.09 s), hit<-monster-crash (0.95 s),
+crack<-explodingplatform (0.80 s), die<-Start_Failure (0.19 s).
+`sounds.load()` builds the mixer bank from `sounds/*.wav` (returns {}
+headless, verified); `demo_render.py` triggers by diffing env state: stomp
+when a monster vanishes and feet rise, bounce otherwise, hit when a monster
+vanishes without a rise (bullet), crack on platform removal, die on done.
+env interface unchanged. WAV validity verified via `file` + RIFF parse,
+all six distinct by md5. **Honest caveat:** audio was not heard on this box
+(no pygame/display) — loudness balance is by construction (identical
+peaks); perception judged on user's Mac.
