@@ -169,3 +169,14 @@ scaled up with no smoothing so the art stays chunky.
 
 Nothing in `env.py` or the env interface changed; this pass only touches `art.py` +
 `demo_render.py`, so all headless self-checks/check scripts remain valid.
+
+## Sound pass (post-M10, demo only)
+
+`sounds.py` (new): chiptune-style SFX synthesized at load time from plain math
+(no asset files, no numpy). Six sounds: bounce (rising sine blip), shoot
+(descending square zap), splat (stomp), hit (bullet kill), crack (breakable
+breaks), die (falling saw + rumble). `sounds.load()` returns `{}` when no mixer,
+so headless runs stay silent. `demo_render.py` plays them by diffing env state
+each frame: bounce when feet move up, `hit` instead when a monster vanished
+without feet rising (bullet), `crack` on platform removal, `die` on done.
+env interface unchanged.
