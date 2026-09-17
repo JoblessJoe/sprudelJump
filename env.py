@@ -46,6 +46,7 @@ class SprudelJumpEnv:
         self.brokenCount = 0
         self.stompCount = 0
         self.bulletKillCount = 0
+        self.caughtByMonster = False
         y = SCREEN_HEIGHT
         while y > 0:
             self.platforms.append([random.uniform(0, SCREEN_WIDTH - PLATFORM_WIDTH), y, PLATFORM_WIDTH, False])
@@ -61,6 +62,7 @@ class SprudelJumpEnv:
         self.brokenCount = 0
         self.stompCount = 0
         self.bulletKillCount = 0
+        self.caughtByMonster = False
         steer = action[0] if isinstance(action, (list, tuple)) else action
         self.playerX += (steer - 0.5) * 2 * HORIZONTAL_SPEED
         if self.playerX < -PLAYER_WIDTH:
@@ -90,6 +92,7 @@ class SprudelJumpEnv:
                 self.velY = BOUNCE_VELOCITY
             elif (self.playerX < m[0] + MONSTER_WIDTH and self.playerX + PLAYER_WIDTH > m[0] and self.playerY < m[1] + MONSTER_HEIGHT and self.playerY + PLAYER_HEIGHT > m[1]):
                 fatal = True
+                self.caughtByMonster = True
         for m in monsterGone:
             self.monsters.remove(m)
         self.stompCount = len(monsterGone)

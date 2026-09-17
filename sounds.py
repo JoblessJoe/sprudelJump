@@ -14,6 +14,7 @@ single sound drowns out the others.  File mapping:
     stomp   <- jumponmonster.wav     stomping a monster
     hit     <- monster-crash.wav     bullet killing a monster
     crack   <- explodingplatform.wav breakable platform breaking
+    caught  <- DJ_HeadBonk2.wav      a monster catching/killing the player
     die     <- Start_Failure.wav     game over
 
 Played through pygame's mixer.  When the mixer is unavailable (headless,
@@ -23,7 +24,7 @@ No asset files are fetched at runtime; everything lives in sounds/.
 import os
 
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
-_FILE_NAMES = ("bounce", "shoot", "stomp", "hit", "crack", "die")
+_FILE_NAMES = ("bounce", "shoot", "stomp", "hit", "crack", "caught", "die")
 
 
 def load():

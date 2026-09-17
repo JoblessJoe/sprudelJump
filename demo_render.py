@@ -208,6 +208,8 @@ def main():
             sfx("crack")
         prevVelY = env.velY
         if done:
+            if env.caughtByMonster:
+                sfx("caught")      # a monster got you (distinct from falling off)
             sfx("die")
             score = round(f)
             newBest = score > best and score > 0
