@@ -102,6 +102,7 @@ def main():
     best = 0
     newBest = False
     gameOverUntil = 0
+    spaceWas = False
 
     def draw_world():
         screen.blit(background, (0, 0))
@@ -164,7 +165,9 @@ def main():
         keys = pygame.key.get_pressed()
         left = keys[pygame.K_LEFT] or keys[pygame.K_a]
         right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
-        shoot = 1.0 if keys[pygame.K_SPACE] else 0.0
+        space = keys[pygame.K_SPACE]
+        shoot = 1.0 if (space and not spaceWas) else 0.0
+        spaceWas = space
         if left and right:
             steer = 0.5
         elif left:
