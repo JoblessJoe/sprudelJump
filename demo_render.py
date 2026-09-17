@@ -4,12 +4,16 @@ except ImportError:
     pygame = None
 
 from env import (SprudelJumpEnv, SCREEN_WIDTH, SCREEN_HEIGHT,
-                 PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_HEIGHT)
+                 PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_HEIGHT,
+                 MONSTER_WIDTH, MONSTER_HEIGHT, BULLET_WIDTH, BULLET_HEIGHT)
 
 FPS = 60
 BG_TOP = (28, 22, 58)
 BG_BOTTOM = (70, 40, 110)
 PLATFORM_COLOR = (90, 200, 170)
+BREAKABLE_COLOR = (235, 160, 95)
+MONSTER_COLOR = (230, 70, 90)
+BULLET_COLOR = (250, 240, 200)
 PLAYER_COLOR = (250, 200, 60)
 HUD_BG = (0, 0, 0, 120)
 
@@ -38,8 +42,13 @@ def main():
 
     def sync(showGameOver):
         screen.blit(background, (0, 0))
-        for x, y, w in env.platforms:
-            pygame.draw.rect(screen, PLATFORM_COLOR, (int(x), int(y), int(w), PLATFORM_HEIGHT), border_radius=6)
+        for x, y, w, breakable in env.platforms:
+            color = BREAKABLE_COLOR if breakable else PLATFORM_COLOR
+            pygame.draw.rect(screen, color, (int(x), int(y), int(w), PLATFORM_HEIGHT), border_radius=6)
+        for mx, my in env.monsters:
+            pygame.draw.ellipse(screen, MONSTER_COLOR, (int(mx), int(my), MONSTER_WIDTH, MONSTER_HEIGHT))
+        for bx, by in env.bullets:
+            pygame.draw.rect(screen, BULLET_COLOR, (int(bx), int(by), BULLET_WIDTH, BULLET_HEIGHT))
         px, py = int(env.playerX), int(env.playerY)
         pygame.draw.rect(screen, PLAYER_COLOR, (px, py, PLAYER_WIDTH, PLAYER_HEIGHT), border_radius=10)
 
@@ -81,16 +90,16 @@ def main():
         keys = pygame.key.get_pressed()
         left = keys[pygame.K_LEFT] or keys[pygame.K_a]
         right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+        shoot = 1.0 if keys[pygame.K_SPACE] else 0.0
         if left and right:
-            step_action = 0.5
+            steer = 0.5
         elif left:
-            step_action = 0.0
+            steer = 0.0
         elif right:
-            step_action = 1.0
+            steer = 1.0
         else:
-            step_action = 0.5
-
-        s, f, done = env.step(step_action)
+            steer = 0.5
+        s, f, done = env.step([steer, shoot])
         if done:
             gameOverUntil = now + 1200
         sync(False)
