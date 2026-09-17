@@ -122,7 +122,7 @@ def main():
         screen.blit(b, (SCREEN_WIDTH - b.get_width() - 8, 8))
         if env.totalHeight < 50 and best == 0:
             tip = smallFont.render("arrows / A D to steer     SPACE to shoot", True, DIM_TEXT)
-            screen.blit(tip, tip.get_rect(bottomcenter=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
+            screen.blit(tip, tip.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
 
     def draw_game_over():
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -136,8 +136,8 @@ def main():
         extra = "   NEW BEST!" if newBest else f"   Best {best}"
         score = font.render(f"Height {round(env.totalHeight)}{extra}", True, HUD_TEXT)
         again = smallFont.render("R restart      Esc quit", True, DIM_TEXT)
-        for t, dy in ((title, -48), (score, 4), (again, 44)):
-            screen.blit(t, t.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + dy)))
+        for img, dy in ((title, -48), (score, 4), (again, 44)):
+            screen.blit(img, img.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + dy)))
 
     run = True
     clock = pygame.time.Clock()
