@@ -1,18 +1,20 @@
 """Sound effects for the SprudelJump demo.
 
-SFX are genuine 8-bit WAV files from the CC0 (public domain) "8-bit
-Platformer SFX" pack by MoxieCat, FamiTracker export:
+SFX are authentic WAV files ripped from Doodle Jump Arcade, collected by
+LeDerpSillyGoober and hosted on The Sounds Resource (fan rip of a 2009
+commercial game — kept as demo-only assets; do not ship commercially):
 
-    https://opengameart.org/content/8-bit-platformer-sfx-0
+    https://sounds.spriters-resource.com/arcade/doodlejumparcade/asset/450387/
 
-File mapping (downloaded into sounds/ in this repo, trimmed to punchy
-length with a short fade-out):
-    bounce  <- spring.wav           platform bounce
-    shoot   <- throw.wav            firing a bullet
-    stomp   <- warlockhurt.wav      stomping a monster
-    hit     <- warlockexploding.wav bullet killing a monster
-    crack   <- trapdoor.wav         breakable platform breaking
-    die     <- playerhurt.wav       game over
+They are converted to 16-bit mono 44100 Hz, trimmed to a punchy length
+with a 15 ms fade-out, and normalized to the same peak level so no
+single sound drowns out the others.  File mapping:
+    bounce  <- DJ_Jump.wav           platform bounce (short "plop")
+    shoot   <- rocket.wav            firing a bullet (launch burst, 0.35 s)
+    stomp   <- jumponmonster.wav     stomping a monster
+    hit     <- monster-crash.wav     bullet killing a monster
+    crack   <- explodingplatform.wav breakable platform breaking
+    die     <- Start_Failure.wav     game over
 
 Played through pygame's mixer.  When the mixer is unavailable (headless,
 no audio device) load() simply returns {} and play is a silent no-op.
