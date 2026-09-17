@@ -253,3 +253,29 @@ platforms scroll off-screen (old list-diff logic would have double-fired
 on that scroll cleanup with zero real breaks in a similar run). Re-ran
 `check_m2.py`-`check_m9.py`: all still pass, `env.py`'s external behavior
 is unchanged.
+
+## Added a monster sound: "caught"
+
+User noted monsters were entirely silent -- stomp/hit only play when the
+*player* kills a monster; a monster catching the player played nothing
+beyond the generic game-over jingle, identical to falling off the bottom
+of the screen. Added a distinct sfx for that one case where a monster
+"wins".
+
+Re-fetched the same real Sounds Resource archive
+(https://sounds.spriters-resource.com/arcade/doodlejumparcade/asset/450387/)
+and picked `fx/DJ_HeadBonk2.wav` (a literal head-bonk/collision hit,
+0.87 s, stereo) -- processed with the same pipeline as the rest of the
+bank: downmixed to mono, silence-trimmed, 5 ms fade-in / 15 ms fade-out,
+peak-normalized to the same -3 dBFS target as the other five files ->
+`sounds/caught.wav`.
+
+`env.py`: new `self.caughtByMonster` flag (reset False at the top of
+`step()` and in `reset()`), set True only in the direct-overlap-with-a-
+live-monster branch that sets `fatal = True` -- not on falling off the
+bottom, which also sets `done` but isn't a monster catching you.
+`demo_render.py` plays `sfx("caught")` before the existing `sfx("die")`
+when `env.caughtByMonster` is set. Verified headlessly: forcing a monster
+onto the player's exact position sets `caughtByMonster = True`; forcing
+`playerY` past `SCREEN_HEIGHT` with no monsters present (fall-off death)
+leaves it `False`. `check_m2.py`-`check_m9.py` still pass.
