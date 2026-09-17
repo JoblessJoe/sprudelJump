@@ -126,3 +126,46 @@ All milestones M1–M10 complete (M6 and M10 delivered as written+compiled code,
 to pygame being unavailable on this box). `env.py` is ready for headless NN training:
 `reset()` returns 23 floats, `step([steer, shoot])` returns `(state, fitness, done)`, zero external
 dependencies.
+
+---
+
+## UI polish pass (post-M10, demo only)
+
+Goal: prettier, more polished UI; a "real" Doodle-Jump-style character; monsters that look like
+actual monsters. Kept low-pixel-res/chunky on purpose.
+
+**New `art.py`** — pure pixel-grid sprites (character = one solid-color cell, `.` = transparent),
+scaled up with no smoothing so the art stays chunky.
+- **Player** (12x12 grid @ scale 3 → 36x36): a yellow, round-bodied doodle jumper with big
+  white/pupil eyes, a mouth, side shading, and orange feet. Reads as a little cartoon jumper, not
+  a plain rounded square.
+- **Two monster types** (9x9 grid @ scale 4 → 36x36 = exact monster hitbox):
+  - **Grump** — a green slime/blob with white eyes + pupils, a fanged mouth, and little feet.
+  - **Spiky** — a purple spiked blob with a spiky cap, angry eyes, and a mouth.
+  Monsters alternate type by `index % 2` in the draw loop.
+- `make_surface(grid, colors, scale)` is the single renderer; `player_sprite()` /
+  `monster_sprites()` are the public factories.
+
+**Rewrote `demo_render.py`** around the same env interface (unchanged `env.py`):
+- Layered background: vertical gradient + ~50 deterministic twinkling stars + two rows of
+  rounded "hill" ellipses for parallax-style depth.
+- **Platforms** now have a two-tone top edge (lighter highlight + body) so they read as raised
+  capsules; breakables get the amber palette plus a couple of darker crack strokes.
+- **Bullets** = glowing rounded core with a soft glow (SRCALPHA pre-render), centered on the env
+  bullet rect.
+- **HUD** = pill-shaped translucent badges: live `H` (height) top-left, `BEST` top-right; a
+  controls hint shown only on the opening screen.
+- **Game-over** = centered rounded panel (translucent, purple border): title, final height +
+  "NEW BEST!" or "Best …", and the R/Esc hint. Best score persists across runs in-session.
+- Window icon set to the player sprite (guarded, so a headless icon failure can't crash startup).
+
+**Verification this box allows** (pygame still not installable, PEP 668 — same as M6/M10):
+- `python3 -m py_compile art.py demo_render.py` → OK.
+- `python3 demo_render.py` headless → prints the normal skip message and exits 0 (guard intact).
+- Sprite grids validated (row widths consistent); preview PNGs generated for inspection.
+- `env.py` 3000-step smoke re-run (random steer) → state stayed 23 floats, loop terminated cleanly
+  on a monster contact. **The polished look itself is still un-observed on screen** (no display,
+  no pygame here) — correct by construction, same caveat as M10's visual confirmations.
+
+Nothing in `env.py` or the env interface changed; this pass only touches `art.py` +
+`demo_render.py`, so all headless self-checks/check scripts remain valid.
