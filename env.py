@@ -31,10 +31,19 @@ BULLET_COOLDOWN_FRAMES = 10
 
 
 class SprudelJumpEnv:
+    '''
+    Headless Doodle Jump clone. Gym-style interface: reset() to start/restart
+    an episode, step(action) to advance one frame. No rendering here — see
+    demo_render.py for the human-playable pygame wrapper around this class.
+    '''
+
     def __init__(self):
         self.reset()
 
     def reset(self):
+        '''Starts a new episode: resets player/platforms/monsters/bullets to
+        their initial state and returns the first state vector (see
+        _getState).'''
         self.playerX = SCREEN_WIDTH / 2
         self.playerY = SCREEN_HEIGHT / 2
         self.velY = 0.0
@@ -55,6 +64,23 @@ class SprudelJumpEnv:
         return self._getState()
 
     def step(self, action):
+        '''
+        action: [steer, shoot], a 2-element list, both floats in [0.0, 1.0] — this
+        comes directly from a 2-output sigmoid neural network, so both MUST be
+        exactly this range.
+          - action[0] (steer): 0.0 = full left, 0.5 = no horizontal movement, 1.0 = full right
+          - action[1] (shoot): > 0.5 fires a bullet this frame (subject to cooldown,
+            see Monsters & shooting below). No aiming — always straight up.
+
+        Returns (state, fitness, done):
+          - state: new state vector, same format as reset()
+          - fitness: the CURRENT total height climbed so far, PLUS any monster-kill
+            bonuses earned so far (running total, not a per-step delta — see
+            "Scoring" in step logic below). This IS the point counter/score — there
+            is no separate score value.
+          - done: True if the player fell off the bottom of the screen, OR was hit
+            by a monster (game over either way)
+        '''
         # Per-step event counts for renderers/SFX. Distinct from list-length
         # diffs on self.platforms/self.monsters, which also shrink when
         # entries simply scroll off the bottom of the screen -- diffing
@@ -137,6 +163,10 @@ class SprudelJumpEnv:
         return (self._getState(), self.totalHeight, done)
 
     def _spawnPlatform(self):
+        '''Adds one new platform above the current highest one, and rolls a
+        chance to put a monster on it. Gap size, platform width, breakable
+        chance, and monster chance all scale with difficulty t (0 at
+        totalHeight=0, 1 at DIFFICULTY_MAX_HEIGHT and beyond).'''
         t = min(1.0, self.totalHeight / DIFFICULTY_MAX_HEIGHT)
         gapMin = PLATFORM_GAP_MIN + t * (PLATFORM_GAP_MIN_HARD - PLATFORM_GAP_MIN)
         gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
@@ -149,9 +179,24 @@ class SprudelJumpEnv:
             self.monsters.append([px + pw / 2 - MONSTER_WIDTH / 2, py - MONSTER_HEIGHT])
 
     def render(self):
+        '''No-op. This class is headless by design — visuals live entirely in
+        demo_render.py, which reads player/platforms/monsters/bullets directly
+        and never calls this.'''
         pass
 
     def _getState(self):
+        '''
+        Builds the 23-float observation vector, all values pre-normalized to
+        roughly [-1, 1] or [0, 1] so it can be fed straight into a network:
+          [0]    playerX, normalized by SCREEN_WIDTH
+          [1]    velY, normalized by MAX_FALL_SPEED (clamped to [-1, 1])
+          [2:17] 5 nearest platforms above the player, 3 floats each:
+                 (relative x, relative y, is-breakable). Missing slots are
+                 padded with [0.0, 1.0, 0.0] (i.e. "infinitely far below").
+          [17:23] 3 nearest monsters above the player, 2 floats each:
+                 (relative x, relative y). Missing slots padded [0.0, 1.0].
+        Bullets are NOT included — deliberately left out of state.
+        '''
         state = [self.playerX / SCREEN_WIDTH, max(-1.0, min(1.0, self.velY / MAX_FALL_SPEED))]
         above = sorted((p for p in self.platforms if p[1] < self.playerY), key=lambda p: self.playerY - p[1])[:5]
         for p in above:
