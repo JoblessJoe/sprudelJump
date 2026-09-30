@@ -99,7 +99,7 @@ def main():
     except pygame.error:
         pass
 
-    env = SprudelJumpEnv()
+    env = SprudelJumpEnv(maxFramesWithoutProgress=None)  # no stuck-rule for human play
     best = 0
     newBest = False
     gameOverUntil = 0

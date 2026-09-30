@@ -37,7 +37,13 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self):
+    def __init__(self, maxFramesWithoutProgress=300):
+        '''maxFramesWithoutProgress: episode ends once the score (totalHeight)
+        hasn't increased for this many frames in a row (stops agents from
+        surviving forever without climbing, e.g. bouncing on the same
+        platform(s)). One full bounce is ~65 frames, so 300 is ~4-5 bounces.
+        None disables the rule.'''
+        self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.reset()
 
     def reset(self):
@@ -56,6 +62,8 @@ class SprudelJumpEnv:
         self.stompCount = 0
         self.bulletKillCount = 0
         self.caughtByMonster = False
+        self.bestHeight = 0.0
+        self.framesWithoutProgress = 0
         y = SCREEN_HEIGHT
         while y > 0:
             self.platforms.append([random.uniform(0, SCREEN_WIDTH - PLATFORM_WIDTH), y, PLATFORM_WIDTH, False])
@@ -79,7 +87,8 @@ class SprudelJumpEnv:
             "Scoring" in step logic below). This IS the point counter/score — there
             is no separate score value.
           - done: True if the player fell off the bottom of the screen, OR was hit
-            by a monster (game over either way)
+            by a monster, OR the score hasn't increased for
+            maxFramesWithoutProgress frames (game over either way)
         '''
         # Per-step event counts for renderers/SFX. Distinct from list-length
         # diffs on self.platforms/self.monsters, which also shrink when
@@ -159,7 +168,13 @@ class SprudelJumpEnv:
         self.bullets = [b for b in self.bullets if b[1] <= SCREEN_HEIGHT]
         while self.platforms and min(p[1] for p in self.platforms) > 0:
             self._spawnPlatform()
-        done = fatal or self.playerY > SCREEN_HEIGHT
+        if self.totalHeight > self.bestHeight:
+            self.bestHeight = self.totalHeight
+            self.framesWithoutProgress = 0
+        else:
+            self.framesWithoutProgress += 1
+        stuck = self.maxFramesWithoutProgress is not None and self.framesWithoutProgress >= self.maxFramesWithoutProgress
+        done = fatal or self.playerY > SCREEN_HEIGHT or stuck
         return (self._getState(), self.totalHeight, done)
 
     def _spawnPlatform(self):
