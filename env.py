@@ -223,24 +223,25 @@ class SprudelJumpEnv:
         Sorted nearest-first. Bullets are NOT included - deliberately left out of state.
         Horizontal screen wrap-around is not accounted for in relative x.
         '''
+        # Hot path (runs every frame): clamps are inlined as conditionals instead of
+        # min/max/helper calls - same values, roughly half the cost.
         feet = self.playerY + PLAYER_HEIGHT
         centerX = self.playerX + PLAYER_WIDTH / 2
-
-        def relX(objCenterX):
-            return max(-1.0, min(1.0, (objCenterX - centerX) / SCREEN_WIDTH))
-
-        def relY(objTopY):
-            return max(-1.0, min(1.0, (feet - objTopY) / SCREEN_HEIGHT))
-
-        state = [self.playerX / SCREEN_WIDTH, max(-1.0, min(1.0, self.velY / MAX_FALL_SPEED))]
-        nearest = sorted(self.platforms, key=lambda p: abs(feet - p[1]))[:5]
-        for p in nearest:
-            state.extend([relX(p[0] + p[2] / 2), relY(p[1]), 1.0 if p[3] else 0.0])
+        vy = self.velY / MAX_FALL_SPEED
+        state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)]
+        for p in sorted(self.platforms, key=lambda p: abs(feet - p[1]))[:5]:
+            rx = (p[0] + p[2] / 2 - centerX) / SCREEN_WIDTH
+            ry = (feet - p[1]) / SCREEN_HEIGHT
+            state.append(-1.0 if rx < -1.0 else (1.0 if rx > 1.0 else rx))
+            state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
+            state.append(1.0 if p[3] else 0.0)
         while len(state) < 17:
             state.extend([0.0, -1.0, 0.0])
-        nearestM = sorted(self.monsters, key=lambda m: abs(feet - m[1]))[:3]
-        for m in nearestM:
-            state.extend([relX(m[0] + MONSTER_WIDTH / 2), relY(m[1])])
+        for m in sorted(self.monsters, key=lambda m: abs(feet - m[1]))[:3]:
+            rx = (m[0] + MONSTER_WIDTH / 2 - centerX) / SCREEN_WIDTH
+            ry = (feet - m[1]) / SCREEN_HEIGHT
+            state.append(-1.0 if rx < -1.0 else (1.0 if rx > 1.0 else rx))
+            state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
         while len(state) < 23:
             state.extend([0.0, -1.0])
         return state
