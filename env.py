@@ -202,28 +202,40 @@ class SprudelJumpEnv:
     def _getState(self):
         '''
         Builds the 23-float observation vector, all values pre-normalized to
-        roughly [-1, 1] or [0, 1] so it can be fed straight into a network:
+        roughly [-1, 1] or [0, 1] so it can be fed straight into a network.
+        Positions are relative to the player's FEET (what lands on platforms)
+        and horizontal CENTER:
           [0]    playerX, normalized by SCREEN_WIDTH
           [1]    velY, normalized by MAX_FALL_SPEED (clamped to [-1, 1])
-          [2:17] 5 nearest platforms above the player, 3 floats each:
-                 (relative x, relative y, is-breakable). Missing slots are
-                 padded with [0.0, 1.0, 0.0] (i.e. "infinitely far below").
-          [17:23] 3 nearest monsters above the player, 2 floats each:
-                 (relative x, relative y). Missing slots padded [0.0, 1.0].
-        Bullets are NOT included — deliberately left out of state.
+          [2:17] 5 platforms nearest to the feet, ABOVE OR BELOW, 3 floats each:
+                 (relative x of platform center, signed relative y, is-breakable).
+                 relative y > 0 = platform above the feet, < 0 = below.
+                 Platforms below matter: you land on them while falling.
+                 Missing slots are padded with [0.0, -1.0, 0.0] ("far below").
+          [17:23] 3 monsters nearest to the feet, above or below, 2 floats each:
+                 (relative x of monster center, signed relative y). Missing slots
+                 padded [0.0, -1.0].
+        Sorted nearest-first. Bullets are NOT included - deliberately left out of state.
+        Horizontal screen wrap-around is not accounted for in relative x.
         '''
+        feet = self.playerY + PLAYER_HEIGHT
+        centerX = self.playerX + PLAYER_WIDTH / 2
+
+        def relX(objCenterX):
+            return max(-1.0, min(1.0, (objCenterX - centerX) / SCREEN_WIDTH))
+
+        def relY(objTopY):
+            return max(-1.0, min(1.0, (feet - objTopY) / SCREEN_HEIGHT))
+
         state = [self.playerX / SCREEN_WIDTH, max(-1.0, min(1.0, self.velY / MAX_FALL_SPEED))]
-        above = sorted((p for p in self.platforms if p[1] < self.playerY), key=lambda p: self.playerY - p[1])[:5]
-        for p in above:
-            state.append(max(-1.0, min(1.0, (p[0] - self.playerX) / SCREEN_WIDTH)))
-            state.append(max(0.0, min(1.0, (self.playerY - p[1]) / SCREEN_HEIGHT)))
-            state.append(1.0 if p[3] else 0.0)
+        nearest = sorted(self.platforms, key=lambda p: abs(feet - p[1]))[:5]
+        for p in nearest:
+            state.extend([relX(p[0] + p[2] / 2), relY(p[1]), 1.0 if p[3] else 0.0])
         while len(state) < 17:
-            state.extend([0.0, 1.0, 0.0])
-        aboveM = sorted((m for m in self.monsters if m[1] < self.playerY), key=lambda m: self.playerY - m[1])[:3]
-        for m in aboveM:
-            state.append(max(-1.0, min(1.0, (m[0] - self.playerX) / SCREEN_WIDTH)))
-            state.append(max(0.0, min(1.0, (self.playerY - m[1]) / SCREEN_HEIGHT)))
+            state.extend([0.0, -1.0, 0.0])
+        nearestM = sorted(self.monsters, key=lambda m: abs(feet - m[1]))[:3]
+        for m in nearestM:
+            state.extend([relX(m[0] + MONSTER_WIDTH / 2), relY(m[1])])
         while len(state) < 23:
-            state.extend([0.0, 1.0])
+            state.extend([0.0, -1.0])
         return state
