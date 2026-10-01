@@ -4,13 +4,15 @@ try:
 except ImportError:
     pygame = None
 
+import argparse
+import os
 import random
 
 import art
 import sounds
 from env import (SprudelJumpEnv, SCREEN_WIDTH, SCREEN_HEIGHT,
                  PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_HEIGHT,
-                 BULLET_WIDTH, BULLET_HEIGHT)
+                 BULLET_WIDTH, BULLET_HEIGHT, BULLET_COOLDOWN_FRAMES)
 
 FPS = 60
 BG_TOP = (30, 22, 66)
@@ -80,7 +82,26 @@ def draw_platform(surface, p):
             pygame.draw.line(surface, PLAT_CRACK, (cx + 3, y + 8), (cx, y + 12), 1)
 
 
-def main():
+def load_model_policy(path):
+    '''
+    Loads a network saved by tensorNetwork's saveNetwork() (a dict with 'layers':
+    list of (weights [out,in], bias [out]) tensors) and returns policy(state) ->
+    [steer, shoot]. Same math as tensorNetwork's Network.forwardPass: ReLU hidden
+    layers, sigmoid output. Kept inline so this repo doesn't import tensorNetwork.
+    '''
+    import torch
+    layers = torch.load(path, map_location="cpu", weights_only=True)["layers"]  # file holds only tensors + a float
+
+    def policy(state):
+        x = torch.tensor(state).unsqueeze(0)
+        for w, b in layers[:-1]:
+            x = torch.relu(x @ w.T + b)
+        w, b = layers[-1]
+        return torch.sigmoid(x @ w.T + b).squeeze(0).tolist()
+    return policy
+
+
+def main(modelPath=None):
     if pygame is None:
         print("pygame not installed; demo_render.py is optional. Use env.py directly.")
         return
@@ -99,7 +120,12 @@ def main():
     except pygame.error:
         pass
 
-    env = SprudelJumpEnv(maxFramesWithoutProgress=None)  # no stuck-rule for human play
+    policy = load_model_policy(modelPath) if modelPath else None
+    modelName = os.path.basename(modelPath) if modelPath else None
+    # human play: no stuck-rule. Network play: same rule as in training, or a bouncer would loop forever.
+    env = SprudelJumpEnv(maxFramesWithoutProgress=300 if policy else None)
+    state = env._getState()
+    autoRestart = False
     best = 0
     newBest = False
     gameOverUntil = 0
@@ -129,7 +155,10 @@ def main():
         b = pill(font, f"BEST {best:4d}")
         screen.blit(h, (8, 8))
         screen.blit(b, (SCREEN_WIDTH - b.get_width() - 8, 8))
-        if env.totalHeight < 50 and best == 0:
+        if policy:
+            tip = smallFont.render(f"AI: {modelName}     R restart   Esc quit", True, DIM_TEXT)
+            screen.blit(tip, tip.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
+        elif env.totalHeight < 50 and best == 0:
             tip = smallFont.render("arrows / A D to steer     SPACE to shoot", True, DIM_TEXT)
             screen.blit(tip, tip.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
 
@@ -158,9 +187,10 @@ def main():
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 run = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                env.reset()
+                state = env.reset()
                 newBest = False
                 gameOverUntil = 0
+                autoRestart = False
 
         if now < gameOverUntil:
             draw_world()
@@ -169,23 +199,31 @@ def main():
             pygame.display.flip()
             clock.tick(FPS)
             continue
+        if autoRestart:  # network play: start the next game once the game-over panel has been shown
+            state = env.reset()
+            newBest = False
+            autoRestart = False
 
-        keys = pygame.key.get_pressed()
-        left = keys[pygame.K_LEFT] or keys[pygame.K_a]
-        right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
-        space = keys[pygame.K_SPACE]
-        shoot = 1.0 if (space and not spaceWas) else 0.0
-        spaceWas = space
-        if left and right:
-            steer = 0.5
-        elif left:
-            steer = 0.0
-        elif right:
-            steer = 1.0
+        if policy:
+            steer, shootOut = policy(state)
+            shoot = 1.0 if shootOut > 0.5 else 0.0
         else:
-            steer = 0.5
-        s, f, done = env.step([steer, shoot])
-        if shoot:
+            keys = pygame.key.get_pressed()
+            left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+            right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+            space = keys[pygame.K_SPACE]
+            shoot = 1.0 if (space and not spaceWas) else 0.0
+            spaceWas = space
+            if left and right:
+                steer = 0.5
+            elif left:
+                steer = 0.0
+            elif right:
+                steer = 1.0
+            else:
+                steer = 0.5
+        state, f, done = env.step([steer, shoot])
+        if shoot and env.cooldown == BULLET_COOLDOWN_FRAMES - 1:  # only when a bullet actually fired this frame (cooldown was just reset)
             sfx("shoot")
         # A bounce is a single-frame velocity-sign flip (gravity-pulled fall
         # becomes an upward launch), not "feet above where they were last
@@ -215,6 +253,7 @@ def main():
             newBest = score > best and score > 0
             best = max(best, score)
             gameOverUntil = now + 1200
+            autoRestart = policy is not None
         draw_world()
         draw_hud()
         pygame.display.flip()
@@ -224,4 +263,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Play SprudelJump yourself, or watch a trained network play.")
+    parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
+    main(parser.parse_args().model)
