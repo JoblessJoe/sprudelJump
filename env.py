@@ -28,6 +28,7 @@ BULLET_WIDTH = 6
 BULLET_HEIGHT = 14
 BULLET_SPEED = 10.0
 BULLET_COOLDOWN_FRAMES = 10
+PROGRESS_MARGIN = 10.0  # px a new highest point must beat the old one by to count as progress
 
 
 class SprudelJumpEnv:
@@ -37,11 +38,13 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self, maxFramesWithoutProgress=300):
-        '''maxFramesWithoutProgress: episode ends once the score (totalHeight)
-        hasn't increased for this many frames in a row (stops agents from
-        surviving forever without climbing, e.g. bouncing on the same
-        platform(s)). One full bounce is ~65 frames, so 300 is ~4-5 bounces.
+    def __init__(self, maxFramesWithoutProgress=600):
+        '''maxFramesWithoutProgress: episode ends once the player hasn't reached
+        a new highest point (world altitude, not score) for this many frames in a
+        row - stops agents from surviving forever without climbing, e.g. bouncing
+        on the same platform(s). Altitude counts climbing on the lower part of the
+        screen too, where the score doesn't rise because the screen doesn't scroll.
+        One full bounce is ~65 frames; 600 frames = 10 s at the demo's 60 FPS.
         None disables the rule.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.reset()
@@ -62,13 +65,13 @@ class SprudelJumpEnv:
         self.stompCount = 0
         self.bulletKillCount = 0
         self.caughtByMonster = False
-        self.bestHeight = 0.0
         self.framesWithoutProgress = 0
         y = SCREEN_HEIGHT
         while y > 0:
             self.platforms.append([random.uniform(0, SCREEN_WIDTH - PLATFORM_WIDTH), y, PLATFORM_WIDTH, False])
             y -= random.uniform(PLATFORM_GAP_MIN, PLATFORM_GAP_MAX)
         self.platforms.append([self.playerX - PLATFORM_WIDTH / 2, self.playerY + PLAYER_HEIGHT + 10, PLATFORM_WIDTH, False])
+        self.bestAltitude = self.totalHeight + (SCREEN_HEIGHT - self.playerY)
         return self._getState()
 
     def step(self, action):
@@ -87,7 +90,7 @@ class SprudelJumpEnv:
             "Scoring" in step logic below). This IS the point counter/score — there
             is no separate score value.
           - done: True if the player fell off the bottom of the screen, OR was hit
-            by a monster, OR the score hasn't increased for
+            by a monster, OR hasn't reached a new highest point for
             maxFramesWithoutProgress frames (game over either way)
         '''
         # Per-step event counts for renderers/SFX. Distinct from list-length
@@ -168,8 +171,10 @@ class SprudelJumpEnv:
         self.bullets = [b for b in self.bullets if b[1] <= SCREEN_HEIGHT]
         while self.platforms and min(p[1] for p in self.platforms) > 0:
             self._spawnPlatform()
-        if self.totalHeight > self.bestHeight:
-            self.bestHeight = self.totalHeight
+        # world altitude of the player: rises when moving up the screen AND when the screen scrolls
+        altitude = self.totalHeight + (SCREEN_HEIGHT - self.playerY)
+        if altitude > self.bestAltitude + PROGRESS_MARGIN:  # margin: repeated bounces on one platform peak at
+            self.bestAltitude = altitude                     # almost the same height and must not count as progress
             self.framesWithoutProgress = 0
         else:
             self.framesWithoutProgress += 1

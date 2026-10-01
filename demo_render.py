@@ -123,7 +123,7 @@ def main(modelPath=None):
     policy = load_model_policy(modelPath) if modelPath else None
     modelName = os.path.basename(modelPath) if modelPath else None
     # human play: no stuck-rule. Network play: same rule as in training, or a bouncer would loop forever.
-    env = SprudelJumpEnv(maxFramesWithoutProgress=300 if policy else None)
+    env = SprudelJumpEnv() if policy else SprudelJumpEnv(maxFramesWithoutProgress=None)
     state = env._getState()
     autoRestart = False
     best = 0
