@@ -1,6 +1,7 @@
 import random
 
 SCREEN_WIDTH = 400
+HALF_WIDTH = SCREEN_WIDTH / 2
 SCREEN_HEIGHT = 700
 PLAYER_WIDTH = 40
 PLAYER_HEIGHT = 40
@@ -230,7 +231,7 @@ class SprudelJumpEnv:
           [0]    playerX, normalized by SCREEN_WIDTH
           [1]    velY, normalized by MAX_FALL_SPEED (clamped to [-1, 1])
           [2:17] 5 platforms nearest to the feet, ABOVE OR BELOW, 3 floats each:
-                 (relative x of platform center, signed relative y, is-breakable).
+                 (relative x of platform center, wrap-aware, signed relative y, is-breakable).
                  relative y > 0 = platform above the feet, < 0 = below.
                  Platforms below matter: you land on them while falling.
                  Missing slots are padded with [0.0, -1.0, 0.0] ("far below").
@@ -238,7 +239,8 @@ class SprudelJumpEnv:
                  (relative x of monster center, signed relative y). Missing slots
                  padded [0.0, -1.0].
         Sorted nearest-first. Bullets are NOT included - deliberately left out of state.
-        Horizontal screen wrap-around is not accounted for in relative x.
+        Relative x accounts for the horizontal screen wrap: it is the SHORTER way
+        around (through the edge if that is closer), so it lies in [-0.5, 0.5].
         '''
         # Hot path (runs every frame): clamps are inlined as conditionals instead of
         # min/max/helper calls - same values, roughly half the cost.
@@ -247,17 +249,27 @@ class SprudelJumpEnv:
         vy = self.velY / MAX_FALL_SPEED
         state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)]
         for p in sorted(self.platforms, key=lambda p: abs(feet - p[1]))[:5]:
-            rx = (p[0] + p[2] / 2 - centerX) / SCREEN_WIDTH
+            dx = p[0] + p[2] / 2 - centerX
+            if dx > HALF_WIDTH:  # shorter way around is through the screen edge
+                dx -= SCREEN_WIDTH
+            elif dx < -HALF_WIDTH:
+                dx += SCREEN_WIDTH
+            rx = dx / SCREEN_WIDTH
             ry = (feet - p[1]) / SCREEN_HEIGHT
-            state.append(-1.0 if rx < -1.0 else (1.0 if rx > 1.0 else rx))
+            state.append(rx)
             state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
             state.append(1.0 if p[3] else 0.0)
         while len(state) < 17:
             state.extend([0.0, -1.0, 0.0])
         for m in sorted(self.monsters, key=lambda m: abs(feet - m[1]))[:3]:
-            rx = (m[0] + MONSTER_WIDTH / 2 - centerX) / SCREEN_WIDTH
+            dx = m[0] + MONSTER_WIDTH / 2 - centerX
+            if dx > HALF_WIDTH:
+                dx -= SCREEN_WIDTH
+            elif dx < -HALF_WIDTH:
+                dx += SCREEN_WIDTH
+            rx = dx / SCREEN_WIDTH
             ry = (feet - m[1]) / SCREEN_HEIGHT
-            state.append(-1.0 if rx < -1.0 else (1.0 if rx > 1.0 else rx))
+            state.append(rx)
             state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
         while len(state) < 23:
             state.extend([0.0, -1.0])
