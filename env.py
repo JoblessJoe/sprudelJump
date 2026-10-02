@@ -52,7 +52,7 @@ class SprudelJumpEnv:
         self.seed = seed
         self.reset()
 
-    def reset(self, startHeight: int | None = None, seed: int | None = None):
+    def reset(self, maxStartHeight: int | None = None, seed: int | None = None):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
         _getState).
@@ -67,7 +67,7 @@ class SprudelJumpEnv:
         self.velY = 0.0
         # startHeight: practice mode. totalHeight (which drives spawn difficulty) starts there,
         # but startOffset is subtracted from the returned score, so no points are given for free.
-        self.startOffset = startHeight if startHeight is not None else 0.0
+        self.startOffset = self.rng.randint(0, maxStartHeight) if maxStartHeight is not None else 0.0
         self.totalHeight = self.startOffset
         self.platforms = []
         self.monsters = []
