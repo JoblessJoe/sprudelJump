@@ -49,13 +49,15 @@ class SprudelJumpEnv:
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.reset()
 
-    def reset(self):
+    def reset(self, startHeight: int | None = None):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
         _getState).'''
         self.playerX = SCREEN_WIDTH / 2
         self.playerY = SCREEN_HEIGHT / 2
         self.velY = 0.0
+        if startHeight is not None:
+            self.totalHeight = startHeight
         self.totalHeight = 0.0
         self.platforms = []
         self.monsters = []
