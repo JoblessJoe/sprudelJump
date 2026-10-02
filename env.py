@@ -38,21 +38,30 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self, maxFramesWithoutProgress=600):
+    def __init__(self, maxFramesWithoutProgress=600, seed=None):
         '''maxFramesWithoutProgress: episode ends once the player hasn't reached
         a new highest point (world altitude, not score) for this many frames in a
         row - stops agents from surviving forever without climbing, e.g. bouncing
         on the same platform(s). Altitude counts climbing on the lower part of the
         screen too, where the score doesn't rise because the screen doesn't scroll.
         One full bounce is ~65 frames; 600 frames = 10 s at the demo's 60 FPS.
-        None disables the rule.'''
+        None disables the rule.
+        seed: seeds this env's own random generator (platform/monster layout) at every
+        reset(), so the same seed gives the same level. None = a fresh random level.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
+        self.seed = seed
         self.reset()
 
-    def reset(self, startHeight: int | None = None):
+    def reset(self, startHeight: int | None = None, seed: int | None = None):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
-        _getState).'''
+        _getState).
+        seed: if given, replaces the constructor's seed from now on. The env's own
+        generator is re-created from the (new or constructor) seed, so one seed =
+        one level, independent of other envs and of the global 'random' module.'''
+        if seed is not None:
+            self.seed = seed
+        self.rng = random.Random(self.seed)
         self.playerX = SCREEN_WIDTH / 2
         self.playerY = SCREEN_HEIGHT / 2
         self.velY = 0.0
@@ -76,8 +85,8 @@ class SprudelJumpEnv:
         width = PLATFORM_WIDTH - t * (PLATFORM_WIDTH - PLATFORM_WIDTH_MIN)
         y = SCREEN_HEIGHT
         while y > 0:
-            self.platforms.append([random.uniform(0, SCREEN_WIDTH - width), y, width, False])
-            y -= random.uniform(gapMin, gapMax)
+            self.platforms.append([self.rng.uniform(0, SCREEN_WIDTH - width), y, width, False])
+            y -= self.rng.uniform(gapMin, gapMax)
         self.platforms.append([self.playerX - PLATFORM_WIDTH / 2, self.playerY + PLAYER_HEIGHT + 10, PLATFORM_WIDTH, False])
         self.bestAltitude = self.totalHeight + (SCREEN_HEIGHT - self.playerY)
         return self._getState()
@@ -200,9 +209,9 @@ class SprudelJumpEnv:
         gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
         width = PLATFORM_WIDTH - t * (PLATFORM_WIDTH - PLATFORM_WIDTH_MIN)
         topY = min(p[1] for p in self.platforms)
-        breakable = random.random() < (BREAKABLE_CHANCE_BASE + t * (BREAKABLE_CHANCE_MAX - BREAKABLE_CHANCE_BASE))
-        self.platforms.append([random.uniform(0, SCREEN_WIDTH - width), topY - random.uniform(gapMin, gapMax), width, breakable])
-        if random.random() < (MONSTER_SPAWN_CHANCE_BASE + t * (MONSTER_SPAWN_CHANCE_MAX - MONSTER_SPAWN_CHANCE_BASE)):
+        breakable = self.rng.random() < (BREAKABLE_CHANCE_BASE + t * (BREAKABLE_CHANCE_MAX - BREAKABLE_CHANCE_BASE))
+        self.platforms.append([self.rng.uniform(0, SCREEN_WIDTH - width), topY - self.rng.uniform(gapMin, gapMax), width, breakable])
+        if self.rng.random() < (MONSTER_SPAWN_CHANCE_BASE + t * (MONSTER_SPAWN_CHANCE_MAX - MONSTER_SPAWN_CHANCE_BASE)):
             px, py, pw = self.platforms[-1][0], self.platforms[-1][1], self.platforms[-1][2]
             self.monsters.append([px + pw / 2 - MONSTER_WIDTH / 2, py - MONSTER_HEIGHT])
 
