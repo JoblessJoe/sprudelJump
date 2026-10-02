@@ -58,7 +58,8 @@ class SprudelJumpEnv:
         self.velY = 0.0
         if startHeight is not None:
             self.totalHeight = startHeight
-        self.totalHeight = 0.0
+        else: 
+            self.totalHeight = 0.0
         self.platforms = []
         self.monsters = []
         self.bullets = []
