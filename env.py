@@ -56,10 +56,10 @@ class SprudelJumpEnv:
         self.playerX = SCREEN_WIDTH / 2
         self.playerY = SCREEN_HEIGHT / 2
         self.velY = 0.0
-        if startHeight is not None:
-            self.totalHeight = startHeight
-        else: 
-            self.totalHeight = 0.0
+        # startHeight: practice mode. totalHeight (which drives spawn difficulty) starts there,
+        # but startOffset is subtracted from the returned score, so no points are given for free.
+        self.startOffset = startHeight if startHeight is not None else 0.0
+        self.totalHeight = self.startOffset
         self.platforms = []
         self.monsters = []
         self.bullets = []
@@ -69,10 +69,15 @@ class SprudelJumpEnv:
         self.bulletKillCount = 0
         self.caughtByMonster = False
         self.framesWithoutProgress = 0
+        # first screen uses the same difficulty scaling as _spawnPlatform (no breakables/monsters here)
+        t = min(1.0, self.totalHeight / DIFFICULTY_MAX_HEIGHT)
+        gapMin = PLATFORM_GAP_MIN + t * (PLATFORM_GAP_MIN_HARD - PLATFORM_GAP_MIN)
+        gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
+        width = PLATFORM_WIDTH - t * (PLATFORM_WIDTH - PLATFORM_WIDTH_MIN)
         y = SCREEN_HEIGHT
         while y > 0:
-            self.platforms.append([random.uniform(0, SCREEN_WIDTH - PLATFORM_WIDTH), y, PLATFORM_WIDTH, False])
-            y -= random.uniform(PLATFORM_GAP_MIN, PLATFORM_GAP_MAX)
+            self.platforms.append([random.uniform(0, SCREEN_WIDTH - width), y, width, False])
+            y -= random.uniform(gapMin, gapMax)
         self.platforms.append([self.playerX - PLATFORM_WIDTH / 2, self.playerY + PLAYER_HEIGHT + 10, PLATFORM_WIDTH, False])
         self.bestAltitude = self.totalHeight + (SCREEN_HEIGHT - self.playerY)
         return self._getState()
@@ -183,7 +188,7 @@ class SprudelJumpEnv:
             self.framesWithoutProgress += 1
         stuck = self.maxFramesWithoutProgress is not None and self.framesWithoutProgress >= self.maxFramesWithoutProgress
         done = fatal or self.playerY > SCREEN_HEIGHT or stuck
-        return (self._getState(), self.totalHeight, done)
+        return (self._getState(), self.totalHeight - self.startOffset, done)
 
     def _spawnPlatform(self):
         '''Adds one new platform above the current highest one, and rolls a
