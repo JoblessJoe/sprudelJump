@@ -56,7 +56,7 @@ class SprudelJumpEnv:
         self.difficultyInput = difficultyInput
         self.reset()
 
-    def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0):
+    def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0, zeroFraction: float = 0.0):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
         _getState).
@@ -71,7 +71,12 @@ class SprudelJumpEnv:
         self.velY = 0.0
         # startHeight: practice mode. totalHeight (which drives spawn difficulty) starts there,
         # but startOffset is subtracted from the returned score, so no points are given for free.
-        self.startOffset = self.rng.randint(minStartHeight, maxStartHeight) if maxStartHeight is not None else 0.0
+        # zeroFraction: this share of the games (decided by the seeded rng, so the same seed = same decision) starts at 0 like a normal game.
+        # With zeroFraction=0 no random number is used for it, so levels stay identical to before.
+        if maxStartHeight is None or (zeroFraction > 0 and self.rng.random() < zeroFraction):
+            self.startOffset = 0.0
+        else:
+            self.startOffset = self.rng.randint(minStartHeight, maxStartHeight)
         self.totalHeight = self.startOffset
         self.platforms = []
         self.monsters = []
