@@ -39,7 +39,7 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self, maxFramesWithoutProgress=600, seed=None):
+    def __init__(self, maxFramesWithoutProgress=600, seed=None, difficultyInput=False):
         '''maxFramesWithoutProgress: episode ends once the player hasn't reached
         a new highest point (world altitude, not score) for this many frames in a
         row - stops agents from surviving forever without climbing, e.g. bouncing
@@ -47,13 +47,16 @@ class SprudelJumpEnv:
         screen too, where the score doesn't rise because the screen doesn't scroll.
         One full bounce is ~65 frames; 600 frames = 10 s at the demo's 60 FPS.
         None disables the rule.
+        difficultyInput: True = the state gets a 24th float, the current difficulty t (0 at the start,
+        1 from DIFFICULTY_MAX_HEIGHT up - the same t the level generator uses). False = the classic 23-float state.
         seed: seeds this env's own random generator (platform/monster layout) at every
         reset(), so the same seed gives the same level. None = a fresh random level.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.seed = seed
+        self.difficultyInput = difficultyInput
         self.reset()
 
-    def reset(self, maxStartHeight: int | None = None, seed: int | None = None):
+    def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
         _getState).
@@ -68,7 +71,7 @@ class SprudelJumpEnv:
         self.velY = 0.0
         # startHeight: practice mode. totalHeight (which drives spawn difficulty) starts there,
         # but startOffset is subtracted from the returned score, so no points are given for free.
-        self.startOffset = self.rng.randint(0, maxStartHeight) if maxStartHeight is not None else 0.0
+        self.startOffset = self.rng.randint(minStartHeight, maxStartHeight) if maxStartHeight is not None else 0.0
         self.totalHeight = self.startOffset
         self.platforms = []
         self.monsters = []
@@ -273,4 +276,7 @@ class SprudelJumpEnv:
             state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
         while len(state) < 23:
             state.extend([0.0, -1.0])
+        if self.difficultyInput:
+            t = self.totalHeight / DIFFICULTY_MAX_HEIGHT
+            state.append(1.0 if t > 1.0 else t)
         return state
