@@ -39,7 +39,7 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self, maxFramesWithoutProgress=600, seed=None, difficultyInput=False):
+    def __init__(self, maxFramesWithoutProgress=600, seed=None, difficultyInput=False, stableSlots=False):
         '''maxFramesWithoutProgress: episode ends once the player hasn't reached
         a new highest point (world altitude, not score) for this many frames in a
         row - stops agents from surviving forever without climbing, e.g. bouncing
@@ -49,11 +49,16 @@ class SprudelJumpEnv:
         None disables the rule.
         difficultyInput: True = the state gets a 24th float, the current difficulty t (0 at the start,
         1 from DIFFICULTY_MAX_HEIGHT up - the same t the level generator uses). False = the classic 23-float state.
+        stableSlots: True = the observation slots have fixed meanings instead of being sorted by |distance|: platforms = the 3 nearest
+        BELOW the feet then the 2 nearest ABOVE, monsters = the nearest below then the 2 nearest above, each group nearest-first.
+        Same 23 floats, but a slot no longer jumps to a different platform when a platform above and one below swap distance rank.
+        Missing slots: platforms [0, -1, 0] (below) / [0, 1, 0] (above), monsters [0, -1] / [0, 1].
         seed: seeds this env's own random generator (platform/monster layout) at every
         reset(), so the same seed gives the same level. None = a fresh random level.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.seed = seed
         self.difficultyInput = difficultyInput
+        self.stableSlots = stableSlots
         self.reset()
 
     def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0, zeroFraction: float = 0.0):
@@ -208,6 +213,42 @@ class SprudelJumpEnv:
         done = fatal or self.playerY > SCREEN_HEIGHT or stuck
         return (self._getState(), self.totalHeight - self.startOffset, done)
 
+    def _getStateStable(self, state, feet, centerX):
+        '''Platform/monster part of the state for stableSlots=True (see __init__); 'state' already holds playerX and velY.'''
+        below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:3]     # nearest first (smallest y >= feet)
+        above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:2]
+        for group, n, pad in ((below, 3, (0.0, -1.0, 0.0)), (above, 2, (0.0, 1.0, 0.0))):
+            for p in group:
+                dx = p[0] + p[2] / 2 - centerX
+                if dx > HALF_WIDTH:
+                    dx -= SCREEN_WIDTH
+                elif dx < -HALF_WIDTH:
+                    dx += SCREEN_WIDTH
+                ry = (feet - p[1]) / SCREEN_HEIGHT
+                state.append(dx / SCREEN_WIDTH)
+                state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
+                state.append(1.0 if p[3] else 0.0)
+            for _ in range(n - len(group)):
+                state.extend(pad)
+        below = sorted((m for m in self.monsters if m[1] >= feet), key=lambda m: m[1])[:1]
+        above = sorted((m for m in self.monsters if m[1] < feet), key=lambda m: -m[1])[:2]
+        for group, n, pad in ((below, 1, (0.0, -1.0)), (above, 2, (0.0, 1.0))):
+            for m in group:
+                dx = m[0] + MONSTER_WIDTH / 2 - centerX
+                if dx > HALF_WIDTH:
+                    dx -= SCREEN_WIDTH
+                elif dx < -HALF_WIDTH:
+                    dx += SCREEN_WIDTH
+                ry = (feet - m[1]) / SCREEN_HEIGHT
+                state.append(dx / SCREEN_WIDTH)
+                state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
+            for _ in range(n - len(group)):
+                state.extend(pad)
+        if self.difficultyInput:
+            t = self.totalHeight / DIFFICULTY_MAX_HEIGHT
+            state.append(1.0 if t > 1.0 else t)
+        return state
+
     def _spawnPlatform(self):
         '''Adds one new platform above the current highest one, and rolls a
         chance to put a monster on it. Gap size, platform width, breakable
@@ -256,6 +297,8 @@ class SprudelJumpEnv:
         centerX = self.playerX + PLAYER_WIDTH / 2
         vy = self.velY / MAX_FALL_SPEED
         state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)]
+        if self.stableSlots:
+            return self._getStateStable(state, feet, centerX)
         for p in sorted(self.platforms, key=lambda p: abs(feet - p[1]))[:5]:
             dx = p[0] + p[2] / 2 - centerX
             if dx > HALF_WIDTH:  # shorter way around is through the screen edge
