@@ -24,6 +24,7 @@ MONSTER_WIDTH = 36
 MONSTER_HEIGHT = 36
 MONSTER_SPAWN_CHANCE_BASE = 0.0
 MONSTER_SPAWN_CHANCE_MAX = 0.35
+MONSTER_SPAWN_CHANCE_CAP = 0.7   # upper limit of the spawn chance with monster practice (monsterMult)
 MONSTER_KILL_BONUS = 100.0
 BULLET_WIDTH = 6
 BULLET_HEIGHT = 14
@@ -59,9 +60,10 @@ class SprudelJumpEnv:
         self.seed = seed
         self.difficultyInput = difficultyInput
         self.stableSlots = stableSlots
+        self.bounced = False
         self.reset()
 
-    def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0, zeroFraction: float = 0.0):
+    def reset(self, maxStartHeight: int | None = None, seed: int | None = None, minStartHeight: int = 0, zeroFraction: float = 0.0, monsterFraction: float = 0.0, monsterMult: float = 1.0):
         '''Starts a new episode: resets player/platforms/monsters/bullets to
         their initial state and returns the first state vector (see
         _getState).
@@ -83,6 +85,9 @@ class SprudelJumpEnv:
         else:
             self.startOffset = self.rng.randint(minStartHeight, maxStartHeight)
         self.totalHeight = self.startOffset
+        # monster practice: this share of the games (decided by the seeded rng; none when 0, so levels stay identical) has monsterMult times
+        # the normal monster spawn chance (capped at MONSTER_SPAWN_CHANCE_CAP). Scoring and all other rules are unchanged.
+        self.monsterMult = monsterMult if (monsterFraction > 0 and self.rng.random() < monsterFraction) else 1.0
         self.platforms = []
         self.monsters = []
         self.bullets = []
@@ -132,6 +137,7 @@ class SprudelJumpEnv:
         self.stompCount = 0
         self.bulletKillCount = 0
         self.caughtByMonster = False
+        self.bounced = False
         steer = action[0] if isinstance(action, (list, tuple)) else action
         self.playerX += (steer - 0.5) * 2 * HORIZONTAL_SPEED
         if self.playerX < -PLAYER_WIDTH:
@@ -147,6 +153,7 @@ class SprudelJumpEnv:
             for p in self.platforms:
                 if feetPrev <= p[1] <= feet and self.playerX < p[0] + p[2] and self.playerX + PLAYER_WIDTH > p[0]:
                     self.velY = BOUNCE_VELOCITY
+                    self.bounced = True
                     if p[3]:
                         toRemove.append(p)
             for p in toRemove:
@@ -159,6 +166,7 @@ class SprudelJumpEnv:
                 monsterGone.append(m)
                 self.totalHeight += MONSTER_KILL_BONUS
                 self.velY = BOUNCE_VELOCITY
+                self.bounced = True
             elif (self.playerX < m[0] + MONSTER_WIDTH and self.playerX + PLAYER_WIDTH > m[0] and self.playerY < m[1] + MONSTER_HEIGHT and self.playerY + PLAYER_HEIGHT > m[1]):
                 fatal = True
                 self.caughtByMonster = True
@@ -213,6 +221,27 @@ class SprudelJumpEnv:
         done = fatal or self.playerY > SCREEN_HEIGHT or stuck
         return (self._getState(), self.totalHeight - self.startOffset, done)
 
+    def slotPlatforms(self):
+        '''The 5 platform objects in stableSlots order: the 3 nearest below the feet, then the 2 nearest above (None = no platform).
+        For agents that choose a target platform themselves (the env itself never chooses anything).'''
+        feet = self.playerY + PLAYER_HEIGHT
+        below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:3]
+        above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:2]
+        return below + [None] * (3 - len(below)) + above + [None] * (2 - len(above))
+
+    def relativeTo(self, p):
+        '''[relative x of the platform center (wrap-aware, / SCREEN_WIDTH), signed relative y to the feet (/ SCREEN_HEIGHT, clamped)],
+        same convention as in the state; [0.0, -1.0] for None.'''
+        if p is None:
+            return [0.0, -1.0]
+        dx = p[0] + p[2] / 2 - (self.playerX + PLAYER_WIDTH / 2)
+        if dx > HALF_WIDTH:
+            dx -= SCREEN_WIDTH
+        elif dx < -HALF_WIDTH:
+            dx += SCREEN_WIDTH
+        ry = (self.playerY + PLAYER_HEIGHT - p[1]) / SCREEN_HEIGHT
+        return [dx / SCREEN_WIDTH, -1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry)]
+
     def _getStateStable(self, state, feet, centerX):
         '''Platform/monster part of the state for stableSlots=True (see __init__); 'state' already holds playerX and velY.'''
         below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:3]     # nearest first (smallest y >= feet)
@@ -261,7 +290,7 @@ class SprudelJumpEnv:
         topY = min(p[1] for p in self.platforms)
         breakable = self.rng.random() < (BREAKABLE_CHANCE_BASE + t * (BREAKABLE_CHANCE_MAX - BREAKABLE_CHANCE_BASE))
         self.platforms.append([self.rng.uniform(0, SCREEN_WIDTH - width), topY - self.rng.uniform(gapMin, gapMax), width, breakable])
-        if self.rng.random() < (MONSTER_SPAWN_CHANCE_BASE + t * (MONSTER_SPAWN_CHANCE_MAX - MONSTER_SPAWN_CHANCE_BASE)):
+        if self.rng.random() < min(MONSTER_SPAWN_CHANCE_CAP, (MONSTER_SPAWN_CHANCE_BASE + t * (MONSTER_SPAWN_CHANCE_MAX - MONSTER_SPAWN_CHANCE_BASE)) * self.monsterMult):
             px, py, pw = self.platforms[-1][0], self.platforms[-1][1], self.platforms[-1][2]
             self.monsters.append([px + pw / 2 - MONSTER_WIDTH / 2, py - MONSTER_HEIGHT])
 
