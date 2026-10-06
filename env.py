@@ -54,12 +54,16 @@ class SprudelJumpEnv:
         BELOW the feet then the 2 nearest ABOVE, monsters = the nearest below then the 2 nearest above, each group nearest-first.
         Same 23 floats, but a slot no longer jumps to a different platform when a platform above and one below swap distance rank.
         Missing slots: platforms [0, -1, 0] (below) / [0, 1, 0] (above), monsters [0, -1] / [0, 1].
+        stableSlots can also be a tuple (platformsBelow, platformsAbove, monstersBelow, monstersAbove) with other slot counts, e.g. (4, 3, 1, 2);
+        the state then has 2 + 3 * (platformsBelow + platformsAbove) + 2 * (monstersBelow + monstersAbove) floats. True = (3, 2, 1, 2) = the 23-float state.
         seed: seeds this env's own random generator (platform/monster layout) at every
         reset(), so the same seed gives the same level. None = a fresh random level.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.seed = seed
         self.difficultyInput = difficultyInput
-        self.stableSlots = stableSlots
+        self.slots = (3, 2, 1, 2) if stableSlots is True else (tuple(stableSlots) if stableSlots else None)
+        self.stableSlots = self.slots is not None
+        self.deathCause = 0   # why the last game ended: 0 = running, 1 = monster while rising, 2 = monster otherwise, 3 = fell, 4 = no progress
         self.bounced = False
         self.reset()
 
@@ -96,6 +100,7 @@ class SprudelJumpEnv:
         self.stompCount = 0
         self.bulletKillCount = 0
         self.caughtByMonster = False
+        self.deathCause = 0
         self.framesWithoutProgress = 0
         # first screen uses the same difficulty scaling as _spawnPlatform (no breakables/monsters here)
         t = min(1.0, self.totalHeight / DIFFICULTY_MAX_HEIGHT)
@@ -219,6 +224,7 @@ class SprudelJumpEnv:
             self.framesWithoutProgress += 1
         stuck = self.maxFramesWithoutProgress is not None and self.framesWithoutProgress >= self.maxFramesWithoutProgress
         done = fatal or self.playerY > SCREEN_HEIGHT or stuck
+        self.deathCause = (1 if self.velY < 0 else 2) if fatal else (3 if self.playerY > SCREEN_HEIGHT else (4 if stuck else 0))
         return (self._getState(), self.totalHeight - self.startOffset, done)
 
     def slotPlatforms(self):
@@ -244,9 +250,10 @@ class SprudelJumpEnv:
 
     def _getStateStable(self, state, feet, centerX):
         '''Platform/monster part of the state for stableSlots=True (see __init__); 'state' already holds playerX and velY.'''
-        below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:3]     # nearest first (smallest y >= feet)
-        above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:2]
-        for group, n, pad in ((below, 3, (0.0, -1.0, 0.0)), (above, 2, (0.0, 1.0, 0.0))):
+        pb, pa, mb, ma = self.slots
+        below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:pb]     # nearest first (smallest y >= feet)
+        above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:pa]
+        for group, n, pad in ((below, pb, (0.0, -1.0, 0.0)), (above, pa, (0.0, 1.0, 0.0))):
             for p in group:
                 dx = p[0] + p[2] / 2 - centerX
                 if dx > HALF_WIDTH:
@@ -259,9 +266,9 @@ class SprudelJumpEnv:
                 state.append(1.0 if p[3] else 0.0)
             for _ in range(n - len(group)):
                 state.extend(pad)
-        below = sorted((m for m in self.monsters if m[1] >= feet), key=lambda m: m[1])[:1]
-        above = sorted((m for m in self.monsters if m[1] < feet), key=lambda m: -m[1])[:2]
-        for group, n, pad in ((below, 1, (0.0, -1.0)), (above, 2, (0.0, 1.0))):
+        below = sorted((m for m in self.monsters if m[1] >= feet), key=lambda m: m[1])[:mb]
+        above = sorted((m for m in self.monsters if m[1] < feet), key=lambda m: -m[1])[:ma]
+        for group, n, pad in ((below, mb, (0.0, -1.0)), (above, ma, (0.0, 1.0))):
             for m in group:
                 dx = m[0] + MONSTER_WIDTH / 2 - centerX
                 if dx > HALF_WIDTH:

@@ -18,6 +18,7 @@ Typical use (see tensorNetwork/proSprudler.evaluateNetworkFast):
 import numpy as np
 from numba import njit
 
+
 from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_WIDTH, GRAVITY, BOUNCE_VELOCITY,
                  MAX_FALL_SPEED, HORIZONTAL_SPEED, SCROLL_THRESHOLD_Y, PLATFORM_GAP_MIN, PLATFORM_GAP_MAX, DIFFICULTY_MAX_HEIGHT,
                  PLATFORM_GAP_MIN_HARD, PLATFORM_GAP_MAX_HARD, PLATFORM_WIDTH_MIN, BREAKABLE_CHANCE_BASE, BREAKABLE_CHANCE_MAX,
@@ -30,7 +31,7 @@ PX, PY, VY, TOTAL, OFFSET, BEST, MMULT = 0, 1, 2, 3, 4, 5, 6
 # 'ghost' of a removed target platform (the Python env keeps feeding the frozen last position of the platform object for one frame)
 GHOST_FLAG, GHOST_X, GHOST_Y, GHOST_W = 8, 9, 10, 11
 # int state columns I[g, :]
-COOL, FWP, NP, NM, NB, DONE, BOUNCED, NEXTID, TARGET = 0, 1, 2, 3, 4, 5, 6, 7, 8
+COOL, FWP, NP, NM, NB, DONE, BOUNCED, NEXTID, TARGET, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
 # platform columns: x, y, width, breakable, id
 MASK32 = 0xFFFFFFFF
 
@@ -369,7 +370,9 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     else:
         I[g, FWP] += 1
     stuck = maxNoProgress >= 0 and I[g, FWP] >= maxNoProgress
-    return fatal or F[g, PY] > SCREEN_HEIGHT or stuck
+    fell = F[g, PY] > SCREEN_HEIGHT
+    I[g, CAUSE] = (1 if velY < 0 else 2) if fatal else (3 if fell else (4 if stuck else 0))
+    return fatal or fell or stuck
 
 
 @njit(cache=True)
@@ -417,13 +420,13 @@ def pickNearest(Y, n, key, used, below):
 
 
 @njit(cache=True)
-def slotIds(F, I, PL, g, out):
-    '''Platform indices (into PL[g]) of the 5 stableSlots: 3 nearest below the feet (smallest y >= feet first), 2 nearest above (largest y < feet first); -1 = none.'''
+def slotIds(F, I, PL, g, out, pb, pa):
+    '''Platform indices (into PL[g]) of the stableSlots: the pb nearest below the feet (smallest y >= feet first), then the pa nearest above (largest y < feet first); -1 = none.'''
     feet = F[g, PY] + PLAYER_HEIGHT
     nP = I[g, NP]
-    for s in range(5):
+    for s in range(pb + pa):
         out[s] = -1
-    for s in range(3):
+    for s in range(pb):
         best = -1
         for i in range(nP):
             y = PL[g, i, 1]
@@ -437,13 +440,13 @@ def slotIds(F, I, PL, g, out):
                 if best < 0 or y < PL[g, best, 1]:
                     best = i
         out[s] = best
-    for s in range(3, 5):
+    for s in range(pb, pb + pa):
         best = -1
         for i in range(nP):
             y = PL[g, i, 1]
             if y < feet:
                 already = False
-                for q in range(3, s):
+                for q in range(pb, s):
                     if out[q] == i:
                         already = True
                 if already:
@@ -454,8 +457,33 @@ def slotIds(F, I, PL, g, out):
 
 
 @njit(cache=True)
-def observeGame(F, I, PL, MO, g, row, stable, difficulty):
-    '''Writes the 23 (or 24 with difficulty) state floats of game g into row; returns the number written.'''
+def monsterIds(F, I, MO, g, out, mb, ma):
+    '''Same for monsters: the mb nearest below the feet, then the ma nearest above; -1 = none.'''
+    feet = F[g, PY] + PLAYER_HEIGHT
+    nM = I[g, NM]
+    for s in range(mb + ma):
+        out[s] = -1
+    for s in range(mb + ma):
+        isBelow = s < mb
+        lo = 0 if isBelow else mb
+        best = -1
+        for i in range(nM):
+            y = MO[g, i, 1]
+            if (y >= feet) == isBelow:
+                already = False
+                for q in range(lo, s):
+                    if out[q] == i:
+                        already = True
+                if already:
+                    continue
+                if best < 0 or (y < MO[g, best, 1] if isBelow else y > MO[g, best, 1]):
+                    best = i
+        out[s] = best
+
+
+@njit(cache=True)
+def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma):
+    '''Writes the 23 (or 24 with difficulty; with stable slots 2 + 3 * (pb + pa) + 2 * (mb + ma) + difficulty) state floats of game g into row; returns the number written.'''
     feet = F[g, PY] + PLAYER_HEIGHT
     vy = F[g, VY] / MAX_FALL_SPEED
     row[0] = F[g, PX] / SCREEN_WIDTH
@@ -464,46 +492,26 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty):
     nM = I[g, NM]
     c = 2
     if stable:
-        ids = np.empty(5, dtype=np.int64)
-        slotIds(F, I, PL, g, ids)
-        for s in range(5):
+        ids = np.empty(pb + pa, dtype=np.int64)
+        slotIds(F, I, PL, g, ids, pb, pa)
+        for s in range(pb + pa):
             i = ids[s]
             if i < 0:
                 row[c] = 0.0
-                row[c + 1] = -1.0 if s < 3 else 1.0
+                row[c + 1] = -1.0 if s < pb else 1.0
                 row[c + 2] = 0.0
             else:
                 row[c] = relXY(F, g, PL[g, i, 0], PL[g, i, 2])
                 row[c + 1] = clampRel(feet, PL[g, i, 1])
                 row[c + 2] = 1.0 if PL[g, i, 3] > 0.5 else 0.0
             c += 3
-        # monsters: 1 nearest below (smallest y >= feet), then the 2 nearest above (largest y < feet)
-        below = -1
-        for i in range(nM):
-            y = MO[g, i, 1]
-            if y >= feet and (below < 0 or y < MO[g, below, 1]):
-                below = i
-        if below < 0:
-            row[c] = 0.0
-            row[c + 1] = -1.0
-        else:
-            row[c] = relXY(F, g, MO[g, below, 0], MONSTER_WIDTH)
-            row[c + 1] = clampRel(feet, MO[g, below, 1])
-        c += 2
-        first = -1
-        for i in range(nM):
-            y = MO[g, i, 1]
-            if y < feet and (first < 0 or y > MO[g, first, 1]):
-                first = i
-        second = -1
-        for i in range(nM):
-            y = MO[g, i, 1]
-            if y < feet and i != first and (second < 0 or y > MO[g, second, 1]):
-                second = i
-        for i in (first, second):
+        mids = np.empty(mb + ma, dtype=np.int64)
+        monsterIds(F, I, MO, g, mids, mb, ma)
+        for s in range(mb + ma):
+            i = mids[s]
             if i < 0:
                 row[c] = 0.0
-                row[c + 1] = 1.0
+                row[c + 1] = -1.0 if s < mb else 1.0
             else:
                 row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
                 row[c + 1] = clampRel(feet, MO[g, i, 1])
@@ -555,12 +563,12 @@ def findPlatform(I, PL, g, pid):
 
 
 @njit(cache=True)
-def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode):
+def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode, pb, pa, mb, ma):
     '''Fills out[a] with the observation of game alive[a]. In target mode (out has 25 columns) the last two are the committed
     target's relative x / signed relative y ([0, -1] without a target).'''
     for a in range(len(alive)):
         g = alive[a]
-        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty)
+        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma)
         if targetMode:
             i = findPlatform(I, PL, g, I[g, TARGET]) if I[g, TARGET] >= 0 else -1
             if i >= 0:
@@ -592,7 +600,7 @@ def decideTargets(F, I, PL, alive, votes):
         if not need:
             continue
         F[g, GHOST_FLAG] = 0.0
-        slotIds(F, I, PL, g, ids)
+        slotIds(F, I, PL, g, ids, 3, 2)
         lo = 3 if F[g, VY] < 0 else 0
         hi = 5 if F[g, VY] < 0 else 3
         best = -1
@@ -613,10 +621,14 @@ class FastBatch:
                  stable=False, difficulty=False, maxFramesWithoutProgress=600):
         G = len(seeds)
         self.G = G
-        self.stable, self.difficulty = stable, difficulty
+        # stable: False = classic, True = the 3/2/1/2 layout, or a tuple (platformsBelow, platformsAbove, monstersBelow, monstersAbove)
+        self.layout = (3, 2, 1, 2) if stable is True else (tuple(stable) if stable else (3, 2, 1, 2))
+        self.stable, self.difficulty = bool(stable), difficulty
+        self.customLayout = bool(stable) and self.layout != (3, 2, 1, 2)
+        self.obsLength = 2 + 3 * (self.layout[0] + self.layout[1]) + 2 * (self.layout[2] + self.layout[3]) if self.stable else 23
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
         self.F = np.zeros((G, 12))
-        self.I = np.zeros((G, 9), dtype=np.int64)
+        self.I = np.zeros((G, 10), dtype=np.int64)
         self.PL = np.zeros((G, MAXP, 5))
         self.MO = np.zeros((G, MAXM, 2))
         self.BU = np.zeros((G, MAXB, 2))
@@ -629,7 +641,11 @@ class FastBatch:
     def observe(self, alive, nIn):
         '''alive: int64 array of game indices. nIn: 23, 24 (difficulty) or 25 (target mode). Returns float64 [len(alive), nIn].'''
         out = np.zeros((len(alive), nIn))
-        observeMany(self.F, self.I, self.PL, self.MO, alive, out, self.stable, nIn == 24 or self.difficulty, nIn == 25)
+        if self.customLayout:    # other slot counts: nIn is just obsLength (+1 with the difficulty input); no target mode
+            assert nIn == self.obsLength + (1 if self.difficulty else 0), f"network has {nIn} inputs, layout {self.layout} gives {self.obsLength}"
+            observeMany(self.F, self.I, self.PL, self.MO, alive, out, True, self.difficulty, False, *self.layout)
+            return out
+        observeMany(self.F, self.I, self.PL, self.MO, alive, out, self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout)
         return out
 
     def decide(self, alive, votes):
@@ -638,6 +654,10 @@ class FastBatch:
     def step(self, alive, steer, shoot, repeat=1):
         stepMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, np.ascontiguousarray(steer, dtype=np.float64),
                  np.ascontiguousarray(shoot, dtype=np.float64), repeat, self.maxNoProgress)
+
+    def causes(self):
+        '''Why each game ended: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress.'''
+        return self.I[:, CAUSE]
 
     def done(self):
         return self.I[:, DONE] == 1

@@ -15,6 +15,10 @@ CONFIGS = [
     dict(stable=True, maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
     dict(stable=False, maxStart=30000, minStart=0, zero=0.0, mf=0.0, mm=1.0),
     dict(stable=True, maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
+    dict(stable=(4, 3, 1, 2), maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
+    dict(stable=(6, 4, 1, 2), maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
+    dict(stable=(3, 2, 2, 3), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
+    dict(stable=(1, 1, 4, 4), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # extreme counts: many missing-slot paddings
 ]
 POLICIES = {
     "random": lambda rng, f: [rng.random(), 1.0 if rng.random() > 0.5 else 0.0],
@@ -35,7 +39,7 @@ def compare(cfg, seeds, frames, policy):
         if not alive:
             break
         idx = np.array(alive, dtype=np.int64)
-        obs = b.observe(idx, 23)
+        obs = b.observe(idx, len(states[alive[0]]))
         for row, g in zip(obs, alive):
             assert np.array_equal(row, np.array(states[g])), f"observation differs: game {g} frame {f}\n{row}\n{np.array(states[g])}"
         acts = [policy(rng, f) for _ in alive]
@@ -45,6 +49,7 @@ def compare(cfg, seeds, frames, policy):
             st, sc, d = results[g]
             assert b.scores()[g] == sc, f"score differs: game {g} frame {f}: {b.scores()[g]} vs {sc}"
             assert bool(b.done()[g]) == d, f"game-over flag differs: game {g} frame {f}"
+            assert b.causes()[g] == envs[g].deathCause, f"death cause differs: game {g} frame {f}: {b.causes()[g]} vs {envs[g].deathCause}"
             states[g] = st
         checked += len(alive)
         alive = [g for g in alive if not results[g][2]]
