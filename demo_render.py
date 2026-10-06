@@ -82,26 +82,50 @@ def draw_platform(surface, p):
             pygame.draw.line(surface, PLAT_CRACK, (cx + 3, y + 8), (cx, y + 12), 1)
 
 
-def load_model_policy(path):
+def load_model_policy(path, smoothing=1.0):
     '''
     Loads a network saved by tensorNetwork's saveNetwork() (a dict with 'layers':
-    list of (weights [out,in], bias [out]) tensors) and returns policy(state) ->
-    [steer, shoot]. Same math as tensorNetwork's Network.forwardPass: ReLU hidden
+    list of (weights [out,in], bias [out]) tensors) and returns policy(state, env) ->
+    (steer, shoot output). Same math as tensorNetwork's Network.forwardPass: ReLU hidden
     layers, sigmoid output. Kept inline so this repo doesn't import tensorNetwork.
+    Target mode (25 inputs, 7 outputs) and steer smoothing work like in tensorNetwork's evaluateNetwork:
+    at every bounce / when its target is lost, the network's highest vote among the platform slots in the direction of travel
+    becomes its committed target; the target's relative x/y are the 2 extra inputs. smoothing < 1: applied steer += smoothing * (output - applied).
+    policy.nIn = number of inputs, policy.reset() = new game.
     '''
     import torch
     layers = torch.load(path, map_location="cpu", weights_only=True)["layers"]  # file holds only tensors + a float
+    nIn, nOut = layers[0][0].shape[1], layers[-1][0].shape[0]
+    targetMode = nIn == 25 and nOut == 7
+    mem = {"target": None, "applied": 0.5}
 
-    def policy(state):
-        x = torch.tensor(state).unsqueeze(0)
+    def reset():
+        mem["target"], mem["applied"] = None, 0.5
+
+    def policy(state, env):
+        t = mem["target"]
+        x = torch.tensor(state + env.relativeTo(t) if targetMode else state).unsqueeze(0)
         for w, b in layers[:-1]:
             x = torch.relu(x @ w.T + b)
         w, b = layers[-1]
-        return torch.sigmoid(x @ w.T + b).squeeze(0).tolist()
+        out = torch.sigmoid(x @ w.T + b).squeeze(0).tolist()
+        if targetMode:
+            feet = env.playerY + 40
+            if env.bounced or t is None or not any(t is q for q in env.platforms) or (env.velY > 0 and t[1] < feet) or (env.velY < 0 and t[1] >= feet):
+                slots = env.slotPlatforms()
+                idx = [k for k in (range(3, 5) if env.velY < 0 else range(0, 3)) if slots[k] is not None] or [k for k in range(5) if slots[k] is not None]
+                mem["target"] = slots[max(idx, key=lambda k: out[2 + k])] if idx else None
+        steer = out[0]
+        if smoothing < 1.0:
+            mem["applied"] += smoothing * (steer - mem["applied"])
+            steer = mem["applied"]
+        return steer, out[1]
+    policy.nIn = nIn
+    policy.reset = reset
     return policy
 
 
-def main(modelPath=None):
+def main(modelPath=None, stable=False, smoothing=1.0):
     if pygame is None:
         print("pygame not installed; demo_render.py is optional. Use env.py directly.")
         return
@@ -120,10 +144,10 @@ def main(modelPath=None):
     except pygame.error:
         pass
 
-    policy = load_model_policy(modelPath) if modelPath else None
+    policy = load_model_policy(modelPath, smoothing) if modelPath else None
     modelName = os.path.basename(modelPath) if modelPath else None
     # human play: no stuck-rule. Network play: same rule as in training, or a bouncer would loop forever.
-    env = SprudelJumpEnv() if policy else SprudelJumpEnv(maxFramesWithoutProgress=None)
+    env = SprudelJumpEnv(stableSlots=stable, difficultyInput=policy.nIn == 24) if policy else SprudelJumpEnv(maxFramesWithoutProgress=None)
     state = env._getState()
     autoRestart = False
     best = 0
@@ -188,6 +212,8 @@ def main(modelPath=None):
                 run = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 state = env.reset()
+                if policy:
+                    policy.reset()
                 newBest = False
                 gameOverUntil = 0
                 autoRestart = False
@@ -201,11 +227,12 @@ def main(modelPath=None):
             continue
         if autoRestart:  # network play: start the next game once the game-over panel has been shown
             state = env.reset()
+            policy.reset()
             newBest = False
             autoRestart = False
 
         if policy:
-            steer, shootOut = policy(state)
+            steer, shootOut = policy(state, env)
             shoot = 1.0 if shootOut > 0.5 else 0.0
         else:
             keys = pygame.key.get_pressed()
@@ -265,4 +292,7 @@ def main(modelPath=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Play SprudelJump yourself, or watch a trained network play.")
     parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
-    main(parser.parse_args().model)
+    parser.add_argument("--stable", action="store_true", help="the model was trained with stableSlots=True (fixed-meaning observation slots)")
+    parser.add_argument("--smoothing", type=float, default=1.0, help="steer smoothing the model was trained with (1 = none)")
+    a = parser.parse_args()
+    main(a.model, a.stable, a.smoothing)
