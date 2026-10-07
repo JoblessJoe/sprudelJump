@@ -25,6 +25,7 @@ from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_H
                  MONSTER_WIDTH, MONSTER_HEIGHT, MONSTER_SPAWN_CHANCE_BASE, MONSTER_SPAWN_CHANCE_MAX, MONSTER_SPAWN_CHANCE_CAP,
                  MONSTER_KILL_BONUS, BULLET_WIDTH, BULLET_HEIGHT, BULLET_SPEED, BULLET_COOLDOWN_FRAMES, PROGRESS_MARGIN)
 
+LAND_TMAX, LAND_TOLERANCE = 100, 40.0    # landingInfo, see env.py
 MAXP, MAXM, MAXB = 48, 48, 24          # array capacities per game (a screen holds ~12 platforms, ~7 bullets)
 # float state columns F[g, :]
 PX, PY, VY, TOTAL, OFFSET, BEST, MMULT = 0, 1, 2, 3, 4, 5, 6
@@ -482,7 +483,61 @@ def monsterIds(F, I, MO, g, out, mb, ma):
 
 
 @njit(cache=True)
-def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma):
+def landFrames(vy, rel):
+    '''Frames until the feet land on a platform whose height relative to the feet is rel (= feet - platform y), 0 = none within LAND_TMAX (as env.py).'''
+    v = vy
+    for t in range(1, LAND_TMAX + 1):
+        v = min(v + GRAVITY, MAX_FALL_SPEED)
+        prev = rel
+        rel += v
+        if v > 0 and prev <= 0 <= rel:
+            return t
+    return 0
+
+
+@njit(cache=True)
+def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing):
+    '''Optional per-platform features of platform index i (-1 = empty slot): occupied flag, landing prediction [T, r]. Returns the new column.'''
+    if i < 0:
+        if occupied:
+            row[c] = 0.0
+            c += 1
+        if landing:
+            row[c] = 1.0
+            row[c + 1] = 1.0
+            c += 2
+        return c
+    if occupied:
+        busy = 0.0
+        for m in range(I[g, NM]):
+            if abs(MO[g, m, 0] + MONSTER_WIDTH / 2 - (PL[g, i, 0] + PL[g, i, 2] / 2)) < 0.5 and abs(MO[g, m, 1] + MONSTER_HEIGHT - PL[g, i, 1]) < 0.5:
+                busy = 1.0
+                break
+        row[c] = busy
+        c += 1
+    if landing:
+        frames = landFrames(F[g, VY], feet - PL[g, i, 1])
+        if frames == 0:
+            row[c] = 1.0
+            row[c + 1] = 1.0
+        else:
+            dx = PL[g, i, 0] + PL[g, i, 2] / 2 - (F[g, PX] + PLAYER_WIDTH / 2)
+            if dx > HALF_WIDTH:
+                dx -= SCREEN_WIDTH
+            elif dx < -HALF_WIDTH:
+                dx += SCREEN_WIDTH
+            need = abs(dx) - LAND_TOLERANCE
+            if need < 0.0:
+                need = 0.0
+            r = need / (HORIZONTAL_SPEED * frames)
+            row[c] = frames / LAND_TMAX
+            row[c + 1] = (2.0 if r > 2.0 else r) / 2.0
+        c += 2
+    return c
+
+
+@njit(cache=True)
+def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupied, landing):
     '''Writes the 23 (or 24 with difficulty; with stable slots 2 + 3 * (pb + pa) + 2 * (mb + ma) + difficulty) state floats of game g into row; returns the number written.'''
     feet = F[g, PY] + PLAYER_HEIGHT
     vy = F[g, VY] / MAX_FALL_SPEED
@@ -516,6 +571,9 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma):
                 row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
                 row[c + 1] = clampRel(feet, MO[g, i, 1])
             c += 2
+        if occupied or landing:
+            for s2 in range(pb + pa):
+                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing)
     else:
         used = np.zeros(nP, dtype=np.bool_)
         key = np.empty(nP, dtype=np.float64)
@@ -563,12 +621,12 @@ def findPlatform(I, PL, g, pid):
 
 
 @njit(cache=True)
-def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode, pb, pa, mb, ma):
+def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
     '''Fills out[a] with the observation of game alive[a]. In target mode (out has 25 columns) the last two are the committed
     target's relative x / signed relative y ([0, -1] without a target).'''
     for a in range(len(alive)):
         g = alive[a]
-        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma)
+        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma, occupied, landing)
         if targetMode:
             i = findPlatform(I, PL, g, I[g, TARGET]) if I[g, TARGET] >= 0 else -1
             if i >= 0:
@@ -624,8 +682,11 @@ class FastBatch:
         # stable: False = classic, True = the 3/2/1/2 layout, or a tuple (platformsBelow, platformsAbove, monstersBelow, monstersAbove)
         self.layout = (3, 2, 1, 2) if stable is True else (tuple(stable) if stable else (3, 2, 1, 2))
         self.stable, self.difficulty = bool(stable), difficulty
-        self.customLayout = bool(stable) and self.layout != (3, 2, 1, 2)
-        self.obsLength = 2 + 3 * (self.layout[0] + self.layout[1]) + 2 * (self.layout[2] + self.layout[3]) if self.stable else 23
+        self.customLayout = bool(stable) and self.layout != (3, 2, 1, 2)    # 4 or 6 entries (the last two switch the optional extra features on)
+        self.occupied = self.stable and len(self.layout) > 4 and bool(self.layout[4])
+        self.landing = self.stable and len(self.layout) > 5 and bool(self.layout[5])
+        self.obsLength = (2 + 3 * (self.layout[0] + self.layout[1]) + 2 * (self.layout[2] + self.layout[3])
+                          + (self.layout[0] + self.layout[1]) * ((1 if self.occupied else 0) + (2 if self.landing else 0))) if self.stable else 23
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
         self.F = np.zeros((G, 12))
         self.I = np.zeros((G, 10), dtype=np.int64)
@@ -643,9 +704,9 @@ class FastBatch:
         out = np.zeros((len(alive), nIn))
         if self.customLayout:    # other slot counts: nIn is just obsLength (+1 with the difficulty input); no target mode
             assert nIn == self.obsLength + (1 if self.difficulty else 0), f"network has {nIn} inputs, layout {self.layout} gives {self.obsLength}"
-            observeMany(self.F, self.I, self.PL, self.MO, alive, out, True, self.difficulty, False, *self.layout)
+            observeMany(self.F, self.I, self.PL, self.MO, alive, out, True, self.difficulty, False, *self.layout[:4], self.occupied, self.landing)
             return out
-        observeMany(self.F, self.I, self.PL, self.MO, alive, out, self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout)
+        observeMany(self.F, self.I, self.PL, self.MO, alive, out, self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout[:4], self.occupied, self.landing)
         return out
 
     def decide(self, alive, votes):

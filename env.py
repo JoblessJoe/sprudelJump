@@ -30,6 +30,8 @@ BULLET_WIDTH = 6
 BULLET_HEIGHT = 14
 BULLET_SPEED = 10.0
 BULLET_COOLDOWN_FRAMES = 10
+LAND_TMAX = 100         # landingInfo: frames simulated when predicting a landing; no landing within this = 'unreachable this jump'
+LAND_TOLERANCE = 40.0   # landingInfo: horizontal center distance (px) that already counts as 'above the platform' (half player + smallest half platform width)
 PROGRESS_MARGIN = 10.0  # px a new highest point must beat the old one by to count as progress
 
 
@@ -56,6 +58,14 @@ class SprudelJumpEnv:
         Missing slots: platforms [0, -1, 0] (below) / [0, 1, 0] (above), monsters [0, -1] / [0, 1].
         stableSlots can also be a tuple (platformsBelow, platformsAbove, monstersBelow, monstersAbove) with other slot counts, e.g. (4, 3, 1, 2);
         the state then has 2 + 3 * (platformsBelow + platformsAbove) + 2 * (monstersBelow + monstersAbove) floats. True = (3, 2, 1, 2) = the 23-float state.
+        Two optional extra features per platform slot (appended after the monsters, slot by slot) are switched on by two more tuple entries
+        (platformsBelow, platformsAbove, monstersBelow, monstersAbove, occupied, landing):
+          occupied (1 float):  1.0 if a monster stands on that platform, else 0.0.
+          landing (2 floats):  [T, r]. T = frames until the feet land on that platform if the player just keeps falling/rising on the current
+                               parabola (vertical motion does not depend on steering), / LAND_TMAX; 1.0 = no landing within LAND_TMAX frames (e.g. the
+                               apex is below the platform). r = steering needed / steering available: max(0, |dx| - LAND_TOLERANCE) / (HORIZONTAL_SPEED * frames),
+                               clipped to [0, 2] and / 2, so r < 0.5 means the platform is still reachable at full steering; 1.0 for unreachable platforms.
+          Empty slots: occupied 0.0, T 1.0, r 1.0.
         seed: seeds this env's own random generator (platform/monster layout) at every
         reset(), so the same seed gives the same level. None = a fresh random level.'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
@@ -63,6 +73,8 @@ class SprudelJumpEnv:
         self.difficultyInput = difficultyInput
         self.slots = (3, 2, 1, 2) if stableSlots is True else (tuple(stableSlots) if stableSlots else None)
         self.stableSlots = self.slots is not None
+        self.occupiedFlag = self.stableSlots and len(self.slots) > 4 and bool(self.slots[4])
+        self.landingInfo = self.stableSlots and len(self.slots) > 5 and bool(self.slots[5])
         self.deathCause = 0   # why the last game ended: 0 = running, 1 = monster while rising, 2 = monster otherwise, 3 = fell, 4 = no progress
         self.bounced = False
         self.reset()
@@ -250,7 +262,7 @@ class SprudelJumpEnv:
 
     def _getStateStable(self, state, feet, centerX):
         '''Platform/monster part of the state for stableSlots=True (see __init__); 'state' already holds playerX and velY.'''
-        pb, pa, mb, ma = self.slots
+        pb, pa, mb, ma = self.slots[:4]
         below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:pb]     # nearest first (smallest y >= feet)
         above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:pa]
         for group, n, pad in ((below, pb, (0.0, -1.0, 0.0)), (above, pa, (0.0, 1.0, 0.0))):
@@ -266,6 +278,7 @@ class SprudelJumpEnv:
                 state.append(1.0 if p[3] else 0.0)
             for _ in range(n - len(group)):
                 state.extend(pad)
+        platBelow, platAbove = below, above
         below = sorted((m for m in self.monsters if m[1] >= feet), key=lambda m: m[1])[:mb]
         above = sorted((m for m in self.monsters if m[1] < feet), key=lambda m: -m[1])[:ma]
         for group, n, pad in ((below, mb, (0.0, -1.0)), (above, ma, (0.0, 1.0))):
@@ -280,10 +293,55 @@ class SprudelJumpEnv:
                 state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
             for _ in range(n - len(group)):
                 state.extend(pad)
+        if self.occupiedFlag or self.landingInfo:
+            for p in platBelow + [None] * (pb - len(platBelow)) + platAbove + [None] * (pa - len(platAbove)):
+                self._slotExtras(state, p, feet, centerX)
         if self.difficultyInput:
             t = self.totalHeight / DIFFICULTY_MAX_HEIGHT
             state.append(1.0 if t > 1.0 else t)
         return state
+
+    def _slotExtras(self, state, p, feet, centerX):
+        '''Optional per-platform features (see __init__): occupied flag and landing prediction [T, r]; p = None for an empty slot.'''
+        if p is None:
+            if self.occupiedFlag:
+                state.append(0.0)
+            if self.landingInfo:
+                state.extend((1.0, 1.0))
+            return
+        if self.occupiedFlag:
+            busy = 0.0
+            for m in self.monsters:
+                if abs(m[0] + MONSTER_WIDTH / 2 - (p[0] + p[2] / 2)) < 0.5 and abs(m[1] + MONSTER_HEIGHT - p[1]) < 0.5:
+                    busy = 1.0
+                    break
+            state.append(busy)
+        if self.landingInfo:
+            # vertical motion is independent of steering: simulate it frame by frame, exactly like step() (gravity, then position)
+            v = self.velY
+            rel = feet - p[1]
+            frames = 0
+            for t in range(1, LAND_TMAX + 1):
+                v = min(v + GRAVITY, MAX_FALL_SPEED)
+                prev = rel
+                rel += v
+                if v > 0 and prev <= 0 <= rel:
+                    frames = t
+                    break
+            if frames == 0:
+                state.extend((1.0, 1.0))
+                return
+            dx = p[0] + p[2] / 2 - centerX
+            if dx > HALF_WIDTH:
+                dx -= SCREEN_WIDTH
+            elif dx < -HALF_WIDTH:
+                dx += SCREEN_WIDTH
+            need = abs(dx) - LAND_TOLERANCE
+            if need < 0.0:
+                need = 0.0
+            r = need / (HORIZONTAL_SPEED * frames)
+            state.append(frames / LAND_TMAX)
+            state.append((2.0 if r > 2.0 else r) / 2.0)
 
     def _spawnPlatform(self):
         '''Adds one new platform above the current highest one, and rolls a

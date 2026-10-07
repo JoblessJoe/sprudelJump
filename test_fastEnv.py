@@ -18,6 +18,10 @@ CONFIGS = [
     dict(stable=(4, 3, 1, 2), maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
     dict(stable=(6, 4, 1, 2), maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
     dict(stable=(3, 2, 2, 3), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
+    dict(stable=(3, 2, 1, 2, 1, 0), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # occupied flag
+    dict(stable=(3, 2, 1, 2, 0, 1), maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),       # landing prediction
+    dict(stable=(4, 3, 1, 2, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, other slot counts
+    dict(stable=(1, 1, 4, 4, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, extreme counts (many empty slots)
     dict(stable=(1, 1, 4, 4), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # extreme counts: many missing-slot paddings
 ]
 POLICIES = {
