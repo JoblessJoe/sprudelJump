@@ -30,6 +30,6 @@ python test_fastEnv.py                     # fastEnv vs env.py, frame by frame
 
 ## The learning side
 
-The networks are trained by **neuroevolution**: a population of networks plays, the best are kept and mutated (optionally crossed over), repeat. The network and training loop live in a separate learning project, written from scratch on PyTorch tensors to learn how a network actually works.
+The networks are trained by **neuroevolution**: a population of networks plays, the best are kept and mutated (optionally crossed over), repeat. The network and training loop live in [tensorNetwork](https://github.com/JoblessJoe/tensorNetwork), my learning project, written from scratch on PyTorch tensors to learn how a network actually works.
 
 Training runs on my home rig: RTX 2080 Ti, Ryzen 9 7950X, 32 GB DDR5. Games run in parallel across the CPU cores.
