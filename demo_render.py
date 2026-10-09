@@ -293,6 +293,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Play SprudelJump yourself, or watch a trained network play.")
     parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
     parser.add_argument("--stable", action="store_true", help="the model was trained with stableSlots=True (fixed-meaning observation slots)")
+    parser.add_argument("--slots", metavar="PB,PA,MB,MA[,OCC,LAND]", help="the model was trained with a custom stableSlots layout (e.g. 3,2,1,2,0,1 for landing prediction); implies --stable")
     parser.add_argument("--smoothing", type=float, default=1.0, help="steer smoothing the model was trained with (1 = none)")
     a = parser.parse_args()
-    main(a.model, a.stable, a.smoothing)
+    stable = tuple(int(x) for x in a.slots.split(",")) if a.slots else a.stable
+    main(a.model, stable, a.smoothing)
