@@ -210,57 +210,47 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     feet = playerY + PLAYER_HEIGHT
     nP = I[g, NP]
     if velY > 0:
-        removed = False
-        keep = np.ones(nP, dtype=np.bool_)
+        k = 0
         for i in range(nP):
             py = PL[g, i, 1]
+            drop = False
             if feetPrev <= py and py <= feet and px < PL[g, i, 0] + PL[g, i, 2] and px + PLAYER_WIDTH > PL[g, i, 0]:
                 velY = BOUNCE_VELOCITY
                 I[g, BOUNCED] = 1
                 if PL[g, i, 3] > 0.5:
-                    keep[i] = False
-                    removed = True
+                    drop = True
                     if PL[g, i, 4] == I[g, TARGET]:
                         F[g, GHOST_FLAG] = 1.0
                         F[g, GHOST_X] = PL[g, i, 0]
                         F[g, GHOST_Y] = PL[g, i, 1]
                         F[g, GHOST_W] = PL[g, i, 2]
-        if removed:
-            k = 0
-            for i in range(nP):
-                if keep[i]:
-                    if k != i:
-                        for c in range(5):
-                            PL[g, k, c] = PL[g, i, c]
-                    k += 1
-            nP = k
-            I[g, NP] = k
+            if not drop:
+                if k != i:
+                    for c in range(5):
+                        PL[g, k, c] = PL[g, i, c]
+                k += 1
+        nP = k
+        I[g, NP] = k
     nM = I[g, NM]
     fatal = False
-    goneAny = False
-    keepM = np.ones(nM, dtype=np.bool_)
     total = F[g, TOTAL]
+    k = 0
     for i in range(nM):
         mx = MO[g, i, 0]
         my = MO[g, i, 1]
         overlapX = px < mx + MONSTER_WIDTH and px + PLAYER_WIDTH > mx
         if velY > 0 and feetPrev <= my and my <= feet and overlapX:
-            keepM[i] = False
-            goneAny = True
             total += MONSTER_KILL_BONUS
             velY = BOUNCE_VELOCITY
             I[g, BOUNCED] = 1
+            continue
         elif overlapX and playerY < my + MONSTER_HEIGHT and playerY + PLAYER_HEIGHT > my:
             fatal = True
-    if goneAny:
-        k = 0
-        for i in range(nM):
-            if keepM[i]:
-                if k != i:
-                    MO[g, k, 0] = MO[g, i, 0]
-                    MO[g, k, 1] = MO[g, i, 1]
-                k += 1
-        nM = k
+        if k != i:
+            MO[g, k, 0] = mx
+            MO[g, k, 1] = my
+        k += 1
+    nM = k
     # bullets
     nB = I[g, NB]
     if shoot > 0.5 and I[g, COOL] == 0:
@@ -277,33 +267,31 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
             BU[g, k, 1] = by
             k += 1
     nB = k
-    bulletGone = np.zeros(nB, dtype=np.bool_)
-    monsterHit = np.zeros(nM, dtype=np.bool_)
-    anyHit = False
+    bulletGone = 0
+    monsterHit = 0
     for i in range(nB):
         bx = BU[g, i, 0]
         by = BU[g, i, 1]
         for j in range(nM):
-            if bulletGone[i] or monsterHit[j]:
+            if (bulletGone >> i) & 1 or (monsterHit >> j) & 1:
                 continue
             mx = MO[g, j, 0]
             my = MO[g, j, 1]
             if bx < mx + MONSTER_WIDTH and bx + BULLET_WIDTH > mx and by < my + MONSTER_HEIGHT and by + BULLET_HEIGHT > my:
-                bulletGone[i] = True
-                monsterHit[j] = True
-                anyHit = True
+                bulletGone |= 1 << i
+                monsterHit |= 1 << j
                 total += MONSTER_KILL_BONUS
-    if anyHit:
+    if bulletGone != 0:
         k = 0
         for i in range(nB):
-            if not bulletGone[i]:
+            if not (bulletGone >> i) & 1:
                 BU[g, k, 0] = BU[g, i, 0]
                 BU[g, k, 1] = BU[g, i, 1]
                 k += 1
         nB = k
         k = 0
         for j in range(nM):
-            if not monsterHit[j]:
+            if not (monsterHit >> j) & 1:
                 MO[g, k, 0] = MO[g, j, 0]
                 MO[g, k, 1] = MO[g, j, 1]
                 k += 1
@@ -490,8 +478,11 @@ def landFrames(vy, rel):
         v = min(v + GRAVITY, MAX_FALL_SPEED)
         prev = rel
         rel += v
-        if v > 0 and prev <= 0 <= rel:
-            return t
+        if v > 0:
+            if prev <= 0 <= rel:
+                return t
+            if rel > 0:      # falling and already below the platform: rel only grows from here, it can never land
+                return 0
     return 0
 
 
@@ -537,7 +528,7 @@ def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing):
 
 
 @njit(cache=True)
-def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupied, landing):
+def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupied, landing, ids, mids):
     '''Writes the 23 (or 24 with difficulty; with stable slots 2 + 3 * (pb + pa) + 2 * (mb + ma) + difficulty) state floats of game g into row; returns the number written.'''
     feet = F[g, PY] + PLAYER_HEIGHT
     vy = F[g, VY] / MAX_FALL_SPEED
@@ -547,7 +538,6 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupi
     nM = I[g, NM]
     c = 2
     if stable:
-        ids = np.empty(pb + pa, dtype=np.int64)
         slotIds(F, I, PL, g, ids, pb, pa)
         for s in range(pb + pa):
             i = ids[s]
@@ -560,7 +550,6 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupi
                 row[c + 1] = clampRel(feet, PL[g, i, 1])
                 row[c + 2] = 1.0 if PL[g, i, 3] > 0.5 else 0.0
             c += 3
-        mids = np.empty(mb + ma, dtype=np.int64)
         monsterIds(F, I, MO, g, mids, mb, ma)
         for s in range(mb + ma):
             i = mids[s]
@@ -624,9 +613,11 @@ def findPlatform(I, PL, g, pid):
 def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
     '''Fills out[a] with the observation of game alive[a]. In target mode (out has 25 columns) the last two are the committed
     target's relative x / signed relative y ([0, -1] without a target).'''
+    ids = np.empty(max(pb + pa, 1), dtype=np.int64)
+    mids = np.empty(max(mb + ma, 1), dtype=np.int64)
     for a in range(len(alive)):
         g = alive[a]
-        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma, occupied, landing)
+        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma, occupied, landing, ids, mids)
         if targetMode:
             i = findPlatform(I, PL, g, I[g, TARGET]) if I[g, TARGET] >= 0 else -1
             if i >= 0:
