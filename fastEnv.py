@@ -486,9 +486,72 @@ def landFrames(vy, rel):
     return 0
 
 
+LAND_EPS = 1e-6    # far above the rounding gap between the closed form below and landFrames' running sum (~1e-12), far below any real distance
+
+
 @njit(cache=True)
-def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing):
-    '''Optional per-platform features of platform index i (-1 = empty slot): occupied flag, landing prediction [T, r]. Returns the new column.'''
+def landPath(vy):
+    '''The fall path shared by all platforms of one frame, in closed form: v_k = vy + k * GRAVITY until it reaches MAX_FALL_SPEED (after K frames).
+    Returns (t0, K), t0 = first frame with v > 0; t0 = -1 if some v_k is within LAND_EPS of 0 (then the sign of v is a rounding question).'''
+    K = int((MAX_FALL_SPEED - vy) / GRAVITY)
+    if K < 0:
+        K = 0
+    k0 = -vy / GRAVITY
+    r = int(round(k0))
+    if r >= 1 and abs(vy + r * GRAVITY) < LAND_EPS:
+        return -1, K
+    t0 = int(np.floor(k0)) + 1 if vy < 0 else 1
+    return t0, K
+
+
+@njit(cache=True)
+def pathSum(vy, K, t):
+    '''v_1 + ... + v_t of landPath's path (equals landFrames' running sum up to rounding).'''
+    if t <= K:
+        return t * vy + GRAVITY * t * (t + 1) / 2
+    return K * vy + GRAVITY * K * (K + 1) / 2 + (t - K) * MAX_FALL_SPEED
+
+
+@njit(cache=True)
+def landFramesPath(vy, rel, t0, K):
+    '''Same result as landFrames(vy, rel), without the frame loop: from t0 on rel only grows, so it is the first t >= t0 with
+    rel + pathSum(t) >= 0 (0 if rel + pathSum(t0 - 1) > 0: already below the platform when it starts falling), found with the quadratic
+    formula. The closed form differs from landFrames' running sum by rounding only, so whenever a deciding value is within LAND_EPS of 0
+    the exact loop decides instead.'''
+    if t0 < 0:
+        return landFrames(vy, rel)
+    if t0 > LAND_TMAX:
+        return 0
+    before = rel + pathSum(vy, K, t0 - 1)
+    if abs(before) < LAND_EPS:
+        return landFrames(vy, rel)
+    if before > 0:
+        return 0
+    last = rel + pathSum(vy, K, LAND_TMAX)
+    if abs(last) < LAND_EPS:
+        return landFrames(vy, rel)
+    if last < 0:
+        return 0
+    # first guess: larger root of GRAVITY/2 t^2 + (vy + GRAVITY/2) t + rel = 0, or the straight part after K
+    b = vy + GRAVITY / 2
+    d = b * b - 2 * GRAVITY * rel
+    t = int(np.ceil((-b + np.sqrt(d)) / GRAVITY)) if d >= 0 else t0
+    if t > K:
+        t = K + int(np.ceil(-(rel + pathSum(vy, K, K)) / MAX_FALL_SPEED))
+    t = min(max(t, t0), LAND_TMAX)
+    while t > t0 and rel + pathSum(vy, K, t - 1) >= 0:    # the guess is off by at most one or two frames
+        t -= 1
+    while rel + pathSum(vy, K, t) < 0:
+        t += 1
+    if abs(rel + pathSum(vy, K, t)) < LAND_EPS or (t > t0 and abs(rel + pathSum(vy, K, t - 1)) < LAND_EPS):
+        return landFrames(vy, rel)
+    return t
+
+
+@njit(cache=True)
+def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing, t0, K):
+    '''Optional per-platform features of platform index i (-1 = empty slot): occupied flag, landing prediction [T, r]. Returns the new column.
+    t0, K: this frame's landPath (only used with landing).'''
     if i < 0:
         if occupied:
             row[c] = 0.0
@@ -507,7 +570,7 @@ def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing):
         row[c] = busy
         c += 1
     if landing:
-        frames = landFrames(F[g, VY], feet - PL[g, i, 1])
+        frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K)
         if frames == 0:
             row[c] = 1.0
             row[c + 1] = 1.0
@@ -561,8 +624,9 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupi
                 row[c + 1] = clampRel(feet, MO[g, i, 1])
             c += 2
         if occupied or landing:
+            t0, K = landPath(F[g, VY]) if landing else (0, 0)
             for s2 in range(pb + pa):
-                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing)
+                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing, t0, K)
     else:
         used = np.zeros(nP, dtype=np.bool_)
         key = np.empty(nP, dtype=np.float64)
