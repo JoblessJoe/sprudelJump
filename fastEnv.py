@@ -14,6 +14,11 @@ Typical use (see tensorNetwork/proSprudler.evaluateNetworkFast):
     ...                                      # network -> actions
     b.step(alive, steer, shoot, repeat)      # advances every game in 'alive' by 'repeat' frames
     b.scores()                               # points beyond the start, per game
+Faster loop with the same results (one compiled call per network decision instead of observe + decide + step + filter):
+    alive, obs = b.startLoop(nIn); n = len(alive)
+    while n:
+        y = network(obs[:n])                 # float32 [n, nOut]
+        n = b.stepObserve(alive, n, y, applied, smooth, repeat)
 '''
 import numpy as np
 from numba import njit
@@ -727,6 +732,49 @@ def decideTargets(F, I, PL, alive, votes):
         I[g, TARGET] = PL[g, ids[best], 4] if best >= 0 else -1
 
 
+@njit(cache=True)
+def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, out, out64,
+                    stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
+    '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n). decide (target mode): the votes
+    y[:, 2:7] pick targets. Steer smoothing (smooth < 1: applied[g] += smooth * (steer - applied[g])), 'repeat' frames, then the finished games are
+    dropped from alive[:n] (order kept) and the observation of the remaining ones is written to out[:k] as float32. Returns k.
+    Same arithmetic as observe -> astype(float32) -> decide -> smoothing -> step -> filter, so the scores stay bit-identical.'''
+    if decide:
+        votes = np.empty((n, 5))
+        for a in range(n):
+            for j in range(5):
+                votes[a, j] = np.float64(y[a, 2 + j])
+        decideTargets(F, I, PL, alive[:n], votes)
+    k = 0
+    for a in range(n):
+        g = alive[a]
+        steer = np.float64(y[a, 0])
+        if smooth < 1.0:
+            applied[g] += smooth * (steer - applied[g])
+            steer = applied[g]
+        shoot = np.float64(y[a, 1])
+        I[g, BOUNCED] = 0
+        for _ in range(repeat):
+            if stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
+                I[g, DONE] = 1
+                break
+        if I[g, DONE] == 0:
+            alive[k] = g
+            k += 1
+    observeFloat32(F, I, PL, MO, alive, k, out, out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
+    return k
+
+
+@njit(cache=True)
+def observeFloat32(F, I, PL, MO, alive, n, out, out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
+    '''observeMany for alive[:n] into out64, then copied to out[:n] as float32.'''
+    out64[:n] = 0.0
+    observeMany(F, I, PL, MO, alive[:n], out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
+    for a in range(n):
+        for c in range(out.shape[1]):
+            out[a, c] = np.float32(out64[a, c])
+
+
 class FastBatch:
     '''G games (one per seed) held in arrays, played in lockstep by the compiled functions above.'''
 
@@ -754,15 +802,36 @@ class FastBatch:
         resetAll(self.F, self.I, self.PL, self.MO, self.MT, seeds, -1 if maxStartHeight is None else int(maxStartHeight), int(minStartHeight),
                  float(zeroFraction), float(monsterFraction), float(monsterMult))
 
+    def observeMode(self, nIn):
+        '''(stable, difficulty, targetMode, platformsBelow, platformsAbove, monstersBelow, monstersAbove, occupied, landing) for observeMany.'''
+        if self.customLayout:    # other slot counts: nIn is just obsLength (+1 with the difficulty input); no target mode
+            assert nIn == self.obsLength + (1 if self.difficulty else 0), f"network has {nIn} inputs, layout {self.layout} gives {self.obsLength}"
+            return (True, self.difficulty, False, *self.layout[:4], self.occupied, self.landing)
+        return (self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout[:4], self.occupied, self.landing)
+
     def observe(self, alive, nIn):
         '''alive: int64 array of game indices. nIn: 23, 24 (difficulty) or 25 (target mode). Returns float64 [len(alive), nIn].'''
         out = np.zeros((len(alive), nIn))
-        if self.customLayout:    # other slot counts: nIn is just obsLength (+1 with the difficulty input); no target mode
-            assert nIn == self.obsLength + (1 if self.difficulty else 0), f"network has {nIn} inputs, layout {self.layout} gives {self.obsLength}"
-            observeMany(self.F, self.I, self.PL, self.MO, alive, out, True, self.difficulty, False, *self.layout[:4], self.occupied, self.landing)
-            return out
-        observeMany(self.F, self.I, self.PL, self.MO, alive, out, self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout[:4], self.occupied, self.landing)
+        observeMany(self.F, self.I, self.PL, self.MO, alive, out, *self.observeMode(nIn))
         return out
+
+    def startLoop(self, nIn):
+        '''Start of the fused loop (see stepObserve): returns (alive, obs). alive = int64 [G] game indices, obs = float32 [G, nIn],
+        row a = observation of game alive[a]; only the first n rows are valid, n = the number stepObserve returned last (G at the start).'''
+        self.loopMode = self.observeMode(nIn)
+        self.obs = np.zeros((self.G, nIn), dtype=np.float32)
+        self.obs64 = np.zeros((self.G, nIn))
+        alive = np.arange(self.G, dtype=np.int64)
+        observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs, self.obs64, *self.loopMode)
+        return alive, self.obs
+
+    def stepObserve(self, alive, n, y, applied, smooth, repeat=1, decide=False):
+        '''One call instead of decide + step + done-filter + observe: y = network output [n, nOut] for the games alive[:n].
+        applied = float64 [G] smoothed steer per game (changed in place; smooth >= 1 = no smoothing). Drops the finished games from
+        alive[:n] in place, writes the next observations to obs[:k] (the array startLoop returned) and returns k.
+        decide: target mode, outputs 2..6 are the slot votes (as decide()).'''
+        return stepObserveMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, n, np.ascontiguousarray(y, dtype=np.float32), applied,
+                               float(smooth), repeat, self.maxNoProgress, bool(decide), self.obs, self.obs64, *self.loopMode)
 
     def decide(self, alive, votes):
         decideTargets(self.F, self.I, self.PL, alive, np.ascontiguousarray(votes, dtype=np.float64))
