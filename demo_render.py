@@ -125,7 +125,7 @@ def load_model_policy(path, smoothing=1.0):
     return policy
 
 
-def main(modelPath=None, stable=False, smoothing=1.0):
+def main(modelPath=None, stable=False, smoothing=1.0, repeat=1):
     if pygame is None:
         print("pygame not installed; demo_render.py is optional. Use env.py directly.")
         return
@@ -156,6 +156,8 @@ def main(modelPath=None, stable=False, smoothing=1.0):
     spaceWas = False
     sndBank = sounds.load()
     prevVelY = env.velY
+    frameInRepeat = 0          # network play: the net decides on frame 0 of every 'repeat' frames, its action is held in between
+    held = (0.5, 0.0)
 
     def sfx(name):
         if name in sndBank:
@@ -212,6 +214,7 @@ def main(modelPath=None, stable=False, smoothing=1.0):
                 run = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 state = env.reset()
+                frameInRepeat = 0
                 if policy:
                     policy.reset()
                 newBest = False
@@ -227,13 +230,17 @@ def main(modelPath=None, stable=False, smoothing=1.0):
             continue
         if autoRestart:  # network play: start the next game once the game-over panel has been shown
             state = env.reset()
+            frameInRepeat = 0
             policy.reset()
             newBest = False
             autoRestart = False
 
         if policy:
-            steer, shootOut = policy(state, env)
-            shoot = 1.0 if shootOut > 0.5 else 0.0
+            if frameInRepeat == 0:
+                steer, shootOut = policy(state, env)
+                held = (steer, 1.0 if shootOut > 0.5 else 0.0)
+            steer, shoot = held
+            frameInRepeat = (frameInRepeat + 1) % repeat
         else:
             keys = pygame.key.get_pressed()
             left = keys[pygame.K_LEFT] or keys[pygame.K_a]
@@ -295,6 +302,7 @@ if __name__ == "__main__":
     parser.add_argument("--stable", action="store_true", help="the model was trained with stableSlots=True (fixed-meaning observation slots)")
     parser.add_argument("--slots", metavar="PB,PA,MB,MA[,OCC,LAND]", help="the model was trained with a custom stableSlots layout (e.g. 3,2,1,2,0,1 for landing prediction); implies --stable")
     parser.add_argument("--smoothing", type=float, default=1.0, help="steer smoothing the model was trained with (1 = none)")
-    a = parser.parse_args()
+    parser.add_argument("--repeat", type=int, default=1, help="action repeat the model was trained with: the network decides every n-th frame and its action is held in between (smoothing is applied once per decision)")
+    a =parser.parse_args()
     stable = tuple(int(x) for x in a.slots.split(",")) if a.slots else a.stable
-    main(a.model, stable, a.smoothing)
+    main(a.model, stable, a.smoothing, a.repeat)

@@ -14,7 +14,7 @@ Python 3.10+.
 pip install pygame
 python demo_render.py                      # play: ←/→ or A/D to steer, Space to shoot, R to restart
 pip install torch
-python demo_render.py --model best.pt      # watch a trained network play (--stable / --smoothing to match its training)
+python demo_render.py --model best.pt      # watch a trained network play (--stable / --smoothing / --repeat to match its training)
 pip install numpy numba
 python test_fastEnv.py                     # fastEnv vs env.py, frame by frame
 ```
