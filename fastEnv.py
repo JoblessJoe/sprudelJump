@@ -22,6 +22,11 @@ Faster loop with the same results (one compiled call per network decision instea
 '''
 import numpy as np
 from numba import njit
+try:
+    import scipy.linalg.cython_blas    # numba's np.dot calls the BLAS through scipy; without scipy forwardNet cannot be compiled
+    HAVE_BLAS = True
+except ImportError:
+    HAVE_BLAS = False
 
 
 from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_WIDTH, GRAVITY, BOUNCE_VELOCITY,
@@ -810,6 +815,20 @@ def observeFloat32(F, I, PL, MO, alive, n, out, out64, stable, difficulty, targe
     for a in range(n):
         for c in range(out.shape[1]):
             out[a, c] = np.float32(out64[a, c])
+
+
+@njit(cache=True)
+def forwardLogits(x, ws, bs):
+    '''The network forward pass up to the last layer's pre-activation inside compiled code: x [n, nIn] float32, ws = tuple of weight matrices already
+    transposed to [in, out] (float32, C order), bs = tuple of bias vectors; ReLU on the hidden layers. Same BLAS matmuls as numpy's `x @ w`, without ~10 numpy
+    calls per decision. The sigmoid of the output stays in numpy on purpose: numpy's float32 exp is not the same function as numba's, a compiled sigmoid
+    would differ in the last digit for ~4% of the outputs and the games would diverge.'''
+    last = len(ws) - 1
+    for L in range(len(ws)):
+        x = np.dot(x, ws[L]) + bs[L]
+        if L < last:
+            x = np.maximum(x, np.float32(0.0))
+    return x
 
 
 class FastBatch:
