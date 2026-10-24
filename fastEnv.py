@@ -36,6 +36,7 @@ MAXP, MAXM, MAXB = 48, 48, 24          # array capacities per game (a screen hol
 PX, PY, VY, TOTAL, OFFSET, BEST, MMULT = 0, 1, 2, 3, 4, 5, 6
 # 'ghost' of a removed target platform (the Python env keeps feeding the frozen last position of the platform object for one frame)
 GHOST_FLAG, GHOST_X, GHOST_Y, GHOST_W = 8, 9, 10, 11
+TOPY = 7    # y of the topmost platform after the last frame (column 7 was unused)
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, NEXTID, TARGET, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
 # platform columns: x, y, width, breakable, id
@@ -191,6 +192,11 @@ def resetGame(F, I, PL, MO, MT, g, seed, maxStart, minStart, zeroFraction, monst
         y -= rndUniform(MT[g], gapMin, gapMax)
     addPlatform(PL, I, g, F[g, PX] - PLATFORM_WIDTH / 2, F[g, PY] + PLAYER_HEIGHT + 10, PLATFORM_WIDTH, 0.0)
     F[g, BEST] = F[g, TOTAL] + (SCREEN_HEIGHT - F[g, PY])
+    topY = PL[g, 0, 1]
+    for i in range(1, I[g, NP]):
+        if PL[g, i, 1] < topY:
+            topY = PL[g, i, 1]
+    F[g, TOPY] = topY
 
 
 @njit(cache=True)
@@ -234,8 +240,11 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                     for c in range(5):
                         PL[g, k, c] = PL[g, i, c]
                 k += 1
+        removed = k != nP    # a breakable platform broke: the topmost platform may have changed
         nP = k
         I[g, NP] = k
+    else:
+        removed = False
     nM = I[g, NM]
     fatal = False
     total = F[g, TOTAL]
@@ -301,31 +310,44 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                 MO[g, k, 1] = MO[g, j, 1]
                 k += 1
         nM = k
-    # scrolling
-    if playerY < SCROLL_THRESHOLD_Y:
+    # scrolling. Platforms only move when the screen scrolls, so only then can one fall off the bottom: the scroll, the drop (order
+    # preserved) and the search for the topmost platform share ONE pass over the platforms.
+    scrolled = playerY < SCROLL_THRESHOLD_Y
+    if scrolled:
         scroll = SCROLL_THRESHOLD_Y - playerY
         total += scroll
         playerY = SCROLL_THRESHOLD_Y
-        for i in range(nP):
-            PL[g, i, 1] += scroll
         for i in range(nM):
             MO[g, i, 1] += scroll
         for i in range(nB):
             BU[g, i, 1] += scroll
-    # drop what fell off the bottom (order preserved)
-    k = 0
-    for i in range(nP):
-        if PL[g, i, 1] <= SCREEN_HEIGHT:
-            if k != i:
-                for c in range(5):
-                    PL[g, k, c] = PL[g, i, c]
-            k += 1
-        elif PL[g, i, 4] == I[g, TARGET]:
-            F[g, GHOST_FLAG] = 1.0
-            F[g, GHOST_X] = PL[g, i, 0]
-            F[g, GHOST_Y] = PL[g, i, 1]
-            F[g, GHOST_W] = PL[g, i, 2]
-    nP = k
+        k = 0
+        minY = np.inf
+        for i in range(nP):
+            y = PL[g, i, 1] + scroll
+            if y <= SCREEN_HEIGHT:
+                if k != i:
+                    PL[g, k, 0] = PL[g, i, 0]
+                    PL[g, k, 2] = PL[g, i, 2]
+                    PL[g, k, 3] = PL[g, i, 3]
+                    PL[g, k, 4] = PL[g, i, 4]
+                PL[g, k, 1] = y
+                if y < minY:
+                    minY = y
+                k += 1
+            elif PL[g, i, 4] == I[g, TARGET]:
+                F[g, GHOST_FLAG] = 1.0
+                F[g, GHOST_X] = PL[g, i, 0]
+                F[g, GHOST_Y] = y
+                F[g, GHOST_W] = PL[g, i, 2]
+        nP = k
+    elif removed:
+        minY = np.inf
+        for i in range(nP):
+            if PL[g, i, 1] < minY:
+                minY = PL[g, i, 1]
+    else:
+        minY = F[g, TOPY]
     k = 0
     for i in range(nM):
         if MO[g, i, 1] <= SCREEN_HEIGHT:
@@ -348,15 +370,16 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     F[g, VY] = velY
     F[g, PY] = playerY
     F[g, TOTAL] = total
-    # new platforms at the top
+    # new platforms at the top (minY: the topmost platform, kept in F[g, TOPY] between frames when nothing changed it)
     while I[g, NP] > 0:
+        if not minY > 0:
+            break
+        spawnPlatform(F, I, PL, MO, MT, g)
         minY = PL[g, 0, 1]
         for i in range(1, I[g, NP]):
             if PL[g, i, 1] < minY:
                 minY = PL[g, i, 1]
-        if not minY > 0:
-            break
-        spawnPlatform(F, I, PL, MO, MT, g)
+    F[g, TOPY] = minY
     altitude = F[g, TOTAL] + (SCREEN_HEIGHT - F[g, PY])
     if altitude > F[g, BEST] + PROGRESS_MARGIN:
         F[g, BEST] = altitude
@@ -415,39 +438,40 @@ def pickNearest(Y, n, key, used, below):
 
 @njit(cache=True)
 def slotIds(F, I, PL, g, out, pb, pa):
-    '''Platform indices (into PL[g]) of the stableSlots: the pb nearest below the feet (smallest y >= feet first), then the pa nearest above (largest y < feet first); -1 = none.'''
+    '''Platform indices (into PL[g]) of the stableSlots: the pb nearest below the feet (smallest y >= feet first), then the pa nearest above (largest y < feet first); -1 = none.
+    One pass over the platforms, each inserted into two small sorted lists; on equal y the lower index stays first (= the order of repeated "pick the nearest unused" scans).'''
     feet = F[g, PY] + PLAYER_HEIGHT
     nP = I[g, NP]
     for s in range(pb + pa):
         out[s] = -1
-    for s in range(pb):
-        best = -1
-        for i in range(nP):
-            y = PL[g, i, 1]
-            if y >= feet:
-                already = False
-                for q in range(s):
-                    if out[q] == i:
-                        already = True
-                if already:
-                    continue
-                if best < 0 or y < PL[g, best, 1]:
-                    best = i
-        out[s] = best
-    for s in range(pb, pb + pa):
-        best = -1
-        for i in range(nP):
-            y = PL[g, i, 1]
-            if y < feet:
-                already = False
-                for q in range(pb, s):
-                    if out[q] == i:
-                        already = True
-                if already:
-                    continue
-                if best < 0 or y > PL[g, best, 1]:
-                    best = i
-        out[s] = best
+    cb = 0
+    ca = 0
+    for i in range(nP):
+        y = PL[g, i, 1]
+        if y >= feet:
+            if cb < pb:
+                p = cb
+                cb += 1
+            elif pb > 0 and y < PL[g, out[pb - 1], 1]:
+                p = pb - 1
+            else:
+                continue
+            while p > 0 and PL[g, out[p - 1], 1] > y:
+                out[p] = out[p - 1]
+                p -= 1
+            out[p] = i
+        else:
+            if ca < pa:
+                p = pb + ca
+                ca += 1
+            elif pa > 0 and y > PL[g, out[pb + pa - 1], 1]:
+                p = pb + pa - 1
+            else:
+                continue
+            while p > pb and PL[g, out[p - 1], 1] < y:
+                out[p] = out[p - 1]
+                p -= 1
+            out[p] = i
 
 
 @njit(cache=True)
@@ -457,22 +481,34 @@ def monsterIds(F, I, MO, g, out, mb, ma):
     nM = I[g, NM]
     for s in range(mb + ma):
         out[s] = -1
-    for s in range(mb + ma):
-        isBelow = s < mb
-        lo = 0 if isBelow else mb
-        best = -1
-        for i in range(nM):
-            y = MO[g, i, 1]
-            if (y >= feet) == isBelow:
-                already = False
-                for q in range(lo, s):
-                    if out[q] == i:
-                        already = True
-                if already:
-                    continue
-                if best < 0 or (y < MO[g, best, 1] if isBelow else y > MO[g, best, 1]):
-                    best = i
-        out[s] = best
+    cb = 0
+    ca = 0
+    for i in range(nM):
+        y = MO[g, i, 1]
+        if y >= feet:
+            if cb < mb:
+                p = cb
+                cb += 1
+            elif mb > 0 and y < MO[g, out[mb - 1], 1]:
+                p = mb - 1
+            else:
+                continue
+            while p > 0 and MO[g, out[p - 1], 1] > y:
+                out[p] = out[p - 1]
+                p -= 1
+            out[p] = i
+        else:
+            if ca < ma:
+                p = mb + ca
+                ca += 1
+            elif ma > 0 and y > MO[g, out[mb + ma - 1], 1]:
+                p = mb + ma - 1
+            else:
+                continue
+            while p > mb and MO[g, out[p - 1], 1] < y:
+                out[p] = out[p - 1]
+                p -= 1
+            out[p] = i
 
 
 @njit(cache=True)
@@ -497,16 +533,17 @@ LAND_EPS = 1e-6    # far above the rounding gap between the closed form below an
 @njit(cache=True)
 def landPath(vy):
     '''The fall path shared by all platforms of one frame, in closed form: v_k = vy + k * GRAVITY until it reaches MAX_FALL_SPEED (after K frames).
-    Returns (t0, K), t0 = first frame with v > 0; t0 = -1 if some v_k is within LAND_EPS of 0 (then the sign of v is a rounding question).'''
+    Returns (t0, K, A, Z), t0 = first frame with v > 0; t0 = -1 if some v_k is within LAND_EPS of 0 (then the sign of v is a rounding question).
+    A = pathSum(t0 - 1), Z = pathSum(LAND_TMAX): the same for every platform of this frame, so they are computed once here.'''
     K = int((MAX_FALL_SPEED - vy) / GRAVITY)
     if K < 0:
         K = 0
     k0 = -vy / GRAVITY
     r = int(round(k0))
     if r >= 1 and abs(vy + r * GRAVITY) < LAND_EPS:
-        return -1, K
+        return -1, K, 0.0, 0.0
     t0 = int(np.floor(k0)) + 1 if vy < 0 else 1
-    return t0, K
+    return t0, K, pathSum(vy, K, t0 - 1), pathSum(vy, K, LAND_TMAX)
 
 
 @njit(cache=True)
@@ -518,7 +555,7 @@ def pathSum(vy, K, t):
 
 
 @njit(cache=True)
-def landFramesPath(vy, rel, t0, K):
+def landFramesPath(vy, rel, t0, K, A, Z):
     '''Same result as landFrames(vy, rel), without the frame loop: from t0 on rel only grows, so it is the first t >= t0 with
     rel + pathSum(t) >= 0 (0 if rel + pathSum(t0 - 1) > 0: already below the platform when it starts falling), found with the quadratic
     formula. The closed form differs from landFrames' running sum by rounding only, so whenever a deciding value is within LAND_EPS of 0
@@ -527,12 +564,12 @@ def landFramesPath(vy, rel, t0, K):
         return landFrames(vy, rel)
     if t0 > LAND_TMAX:
         return 0
-    before = rel + pathSum(vy, K, t0 - 1)
+    before = rel + A
     if abs(before) < LAND_EPS:
         return landFrames(vy, rel)
     if before > 0:
         return 0
-    last = rel + pathSum(vy, K, LAND_TMAX)
+    last = rel + Z
     if abs(last) < LAND_EPS:
         return landFrames(vy, rel)
     if last < 0:
@@ -554,7 +591,7 @@ def landFramesPath(vy, rel, t0, K):
 
 
 @njit(cache=True)
-def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing, t0, K):
+def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing, t0, K, A, Z):
     '''Optional per-platform features of platform index i (-1 = empty slot): occupied flag, landing prediction [T, r]. Returns the new column.
     t0, K: this frame's landPath (only used with landing).'''
     if i < 0:
@@ -575,7 +612,7 @@ def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing, t0, K):
         row[c] = busy
         c += 1
     if landing:
-        frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K)
+        frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K, A, Z)
         if frames == 0:
             row[c] = 1.0
             row[c + 1] = 1.0
@@ -629,9 +666,9 @@ def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupi
                 row[c + 1] = clampRel(feet, MO[g, i, 1])
             c += 2
         if occupied or landing:
-            t0, K = landPath(F[g, VY]) if landing else (0, 0)
+            t0, K, A, Z = landPath(F[g, VY]) if landing else (0, 0, 0.0, 0.0)
             for s2 in range(pb + pa):
-                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing, t0, K)
+                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing, t0, K, A, Z)
     else:
         used = np.zeros(nP, dtype=np.bool_)
         key = np.empty(nP, dtype=np.float64)
