@@ -80,12 +80,25 @@ def mtSeed(mt, seed):
 def mtNext(mt):
     '''genrand_uint32'''
     if mt[624] >= 624:
-        for kk in range(624):
-            y = (mt[kk] & 0x80000000) | (mt[(kk + 1) % 624] & 0x7FFFFFFF)
-            v = mt[(kk + 397) % 624] ^ (y >> 1)
+        # the same in-place refill as before, in three parts without the modulo (kk + 1 and kk + 397 wrap only at the end):
+        # entries 0..226 read mt[kk + 397] (old values), 227..622 read mt[kk - 227] (already refilled), the last one wraps to mt[0] and mt[396]
+        for kk in range(227):
+            y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7FFFFFFF)
+            v = mt[kk + 397] ^ (y >> 1)
             if y & 1:
                 v ^= 0x9908B0DF
             mt[kk] = v
+        for kk in range(227, 623):
+            y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7FFFFFFF)
+            v = mt[kk - 227] ^ (y >> 1)
+            if y & 1:
+                v ^= 0x9908B0DF
+            mt[kk] = v
+        y = (mt[623] & 0x80000000) | (mt[0] & 0x7FFFFFFF)
+        v = mt[396] ^ (y >> 1)
+        if y & 1:
+            v ^= 0x9908B0DF
+        mt[623] = v
         mt[624] = 0
     y = mt[mt[624]]
     mt[624] += 1
@@ -137,14 +150,21 @@ def addPlatform(PL, I, g, x, y, w, breakable):
 
 @njit(cache=True)
 def spawnPlatform(F, I, PL, MO, MT, g):
-    t = min(1.0, F[g, TOTAL] / DIFFICULTY_MAX_HEIGHT)
-    gapMin = PLATFORM_GAP_MIN + t * (PLATFORM_GAP_MIN_HARD - PLATFORM_GAP_MIN)
-    gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
-    width = PLATFORM_WIDTH - t * (PLATFORM_WIDTH - PLATFORM_WIDTH_MIN)
     topY = PL[g, 0, 1]
     for i in range(1, I[g, NP]):
         if PL[g, i, 1] < topY:
             topY = PL[g, i, 1]
+    spawnPlatformAbove(F, I, PL, MO, MT, g, topY)
+
+
+@njit(cache=True)
+def spawnPlatformAbove(F, I, PL, MO, MT, g, topY):
+    '''Adds the next platform above the topmost one (y = topY, the minimum y of the existing platforms) and returns its y, the new topmost
+    (the gap is at least PLATFORM_GAP_MIN > 0, so the new platform is always above all the others).'''
+    t = min(1.0, F[g, TOTAL] / DIFFICULTY_MAX_HEIGHT)
+    gapMin = PLATFORM_GAP_MIN + t * (PLATFORM_GAP_MIN_HARD - PLATFORM_GAP_MIN)
+    gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
+    width = PLATFORM_WIDTH - t * (PLATFORM_WIDTH - PLATFORM_WIDTH_MIN)
     breakable = 1.0 if rndRandom(MT[g]) < (BREAKABLE_CHANCE_BASE + t * (BREAKABLE_CHANCE_MAX - BREAKABLE_CHANCE_BASE)) else 0.0
     x = rndUniform(MT[g], 0.0, SCREEN_WIDTH - width)
     y = topY - rndUniform(MT[g], gapMin, gapMax)
@@ -154,6 +174,7 @@ def spawnPlatform(F, I, PL, MO, MT, g):
         MO[g, n, 0] = x + width / 2 - MONSTER_WIDTH / 2
         MO[g, n, 1] = y - MONSTER_HEIGHT
         I[g, NM] = n + 1
+    return y
 
 
 @njit(cache=True)
@@ -225,7 +246,14 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     playerY = F[g, PY] + velY
     feet = playerY + PLAYER_HEIGHT
     nP = I[g, NP]
-    if velY > 0:
+    candidate = False
+    if velY > 0:    # most falling frames have no platform inside the band [feetPrev, feet]: look for one before running the full loop below
+        for i in range(nP):
+            py = PL[g, i, 1]
+            if feetPrev <= py and py <= feet:
+                candidate = True
+                break
+    if candidate:
         k = 0
         for i in range(nP):
             py = PL[g, i, 1]
@@ -379,11 +407,7 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     while I[g, NP] > 0:
         if not minY > 0:
             break
-        spawnPlatform(F, I, PL, MO, MT, g)
-        minY = PL[g, 0, 1]
-        for i in range(1, I[g, NP]):
-            if PL[g, i, 1] < minY:
-                minY = PL[g, i, 1]
+        minY = spawnPlatformAbove(F, I, PL, MO, MT, g, minY)
     F[g, TOPY] = minY
     altitude = F[g, TOTAL] + (SCREEN_HEIGHT - F[g, PY])
     if altitude > F[g, BEST] + PROGRESS_MARGIN:
