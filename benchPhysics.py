@@ -31,11 +31,10 @@ def variants():
     many = inspect.getsource(fe.stepMany.py_func)
     out = {}
     out["full (control)"] = src
-    out["no bounce loop"] = cut(src, "    if velY > 0:\n        k = 0\n        for i in range(nP):", "    nM = I[g, NM]\n    fatal = False", "    removed = False\n")
+    out["no bounce loop"] = cut(src, "    candidate = False\n    if velY > 0:", "    nM = I[g, NM]\n    fatal = False", "    removed = False\n")
     out["no monster loop"] = cut(src, "    nM = I[g, NM]\n    fatal = False\n    total = F[g, TOTAL]\n    k = 0\n", "    # bullets", "    nM = I[g, NM]\n    fatal = False\n    total = F[g, TOTAL]\n")
     out["no bullets (shoot, move, hit)"] = cut(src, "    # bullets\n", "    # scrolling.", "    nB = I[g, NB]\n    bulletGone = 0\n    monsterHit = 0\n")
     out["no scroll pass"] = src.replace("    scrolled = playerY < SCROLL_THRESHOLD_Y\n", "    scrolled = False\n")
-    out["no monster/bullet clean-up"] = cut(src, "    k = 0\n    for i in range(nM):\n        if MO[g, i, 1] <= SCREEN_HEIGHT:", "    I[g, NP] = nP", "")
     out["no spawn loop"] = cut(src, "    while I[g, NP] > 0:\n        if not minY > 0:", "    F[g, TOPY] = minY", "")
     out["no bookkeeping tail"] = cut(src, "    altitude = F[g, TOTAL]", "    return fatal or fell or stuck", "    fell = False\n    stuck = False\n    I[g, CAUSE] = 0\n")
     return out, many
@@ -95,15 +94,21 @@ def main():
                 frames += len(al) * REPEAT
         return spent, frames
 
-    results = {}
     vs = variants()
+    funcs = {}
     for name, srcText in vs[0].items():
-        stepMany = compile_variant(name, srcText, vs[1])
-        measure(stepMany)    # compile + warm up
-        runs = [measure(stepMany) for _ in range(15)]
-        spent, frames = min(runs)
-        results[name] = spent / frames * 1e9
-        print(f"  compiled and timed: {name}", flush=True)
+        funcs[name] = compile_variant(name, srcText, vs[1])
+        measure(funcs[name])    # compile + warm up
+        print(f"  compiled: {name}", flush=True)
+    # interleaved rounds (every variant once per round, order rotated), so that drift of the machine hits all variants alike; best round counts
+    best = {name: (float("inf"), 1) for name in funcs}
+    names = list(funcs)
+    for rnd in range(20):
+        for name in names[rnd % len(names):] + names[:rnd % len(names)]:
+            r = measure(funcs[name])
+            if r[0] / r[1] < best[name][0] / best[name][1]:
+                best[name] = r
+    results = {name: spent / frames * 1e9 for name, (spent, frames) in best.items()}
     full = results["full (control)"]
     print(f"\n{PASSES} decisions from each of {len(states)} frozen states, only games still alive are stepped.\n")
     print(f"{'variant (section removed)':36s} {'ns per game-frame':>18s} {'saved':>8s}")
