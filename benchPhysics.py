@@ -34,7 +34,7 @@ def variants():
     out["no bounce loop"] = cut(src, "    candidate = False\n    if velY > 0:", "    nM = I[g, NM]\n    fatal = False", "    removed = False\n")
     out["no monster loop"] = cut(src, "    nM = I[g, NM]\n    fatal = False\n    total = F[g, TOTAL]\n    k = 0\n", "    # bullets", "    nM = I[g, NM]\n    fatal = False\n    total = F[g, TOTAL]\n")
     out["no bullets (shoot, move, hit)"] = cut(src, "    # bullets\n", "    # scrolling.", "    nB = I[g, NB]\n    bulletGone = 0\n    monsterHit = 0\n")
-    out["  no bullet-monster collision loop"] = cut(src, "    bulletGone = 0\n    monsterHit = 0\n    for i in range(nB):\n        bx = BU[g, i, 0]", "    if bulletGone != 0:", "    bulletGone = 0\n    monsterHit = 0\n")
+    out["  no bullet-monster collision loop"] = cut(src, "    if nB > 0 and nM > 0:\n", "    if bulletGone != 0:", "")
     out["  no bullet shift while scrolling"] = src.replace("        for i in range(nB):\n            BU[g, i, 1] += scroll\n", "")
     out["  no monster shift while scrolling"] = src.replace("        for i in range(nM):\n            MO[g, i, 1] += scroll\n", "")
     out["  no bottom filter for bullets"] = cut(src, "    k = 0\n    for i in range(nB):\n        if BU[g, i, 1] <= SCREEN_HEIGHT:", "    I[g, NP] = nP", "    nM = nM\n    nB = nB\n")
