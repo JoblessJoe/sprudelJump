@@ -131,9 +131,9 @@ def profile(fe, net, rounds):
         return (pc() - t) / reps
 
     physics = lambda: fe.stepMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), steer, shoot, REPEAT, b.maxNoProgress)
-    observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32, out64, *b.loopMode)
+    observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32, *b.loopMode)
     fused = lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), n, x, np.full(GAMES, 0.5), SMOOTH, REPEAT, b.maxNoProgress,
-                                       False, out32, out64, *b.loopMode)
+                                       False, out32, *b.loopMode)
     fwd = lambda: forward(fe, obs[:n], wTs, bs)
     base = timeit(restore, withRestore=False)
     tPhys = timeit(physics, withRestore=True) - base
@@ -146,6 +146,15 @@ def profile(fe, net, rounds):
                     ("network forward + sigmoid", tFwd)):
         print(f"  {name:34s} {t * 1e6:16.1f} {t / n * 1e9:12.0f} {t / total * 100:21.1f}%")
     print(f"  physics per game-frame: {tPhys / n / REPEAT * 1e9:.0f} ns")
+    # observation split: the same call without the landing prediction (23 inputs instead of 33), and the float32 zero + copy around it
+    mode = list(b.loopMode)
+    noLand = tuple(mode[:-1] + [False])
+    out32n, out64n = np.zeros((GAMES, N_IN - 10), np.float32), np.zeros((GAMES, N_IN - 10))
+    tObsNoLand = timeit(lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32n, *noLand))
+    tObsRaw = timeit(lambda: fe.observeMany(b.F, b.I, b.PL, b.MO, al, out64, *b.loopMode))
+    print(f"  observation without landing prediction: {tObsNoLand * 1e6:.1f} us  -> landing prediction = {(tObs - tObsNoLand) * 1e6:.1f} us "
+          f"({(tObs - tObsNoLand) / tObs * 100:.0f}% of the observation, {(tObs - tObsNoLand) / total * 100:.0f}% of a decision)")
+    print(f"  observeMany alone (no zeroing / float32 copy): {tObsRaw * 1e6:.1f} us -> zero + copy = {(tObs - tObsRaw) * 1e6:.1f} us")
 
 
 def ab(new, old, net, rounds):

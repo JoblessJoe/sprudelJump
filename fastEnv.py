@@ -560,8 +560,8 @@ def pathSum(vy, K, t):
 
 
 @njit(cache=True)
-def landFramesPath(vy, rel, t0, K, A, Z):
-    '''Same result as landFrames(vy, rel), without the frame loop: from t0 on rel only grows, so it is the first t >= t0 with
+def landFramesPathChecked(vy, rel, t0, K, A, Z):
+    '''Slow path of landFramesPath. Same result as landFrames(vy, rel), without the frame loop: from t0 on rel only grows, so it is the first t >= t0 with
     rel + pathSum(t) >= 0 (0 if rel + pathSum(t0 - 1) > 0: already below the platform when it starts falling), found with the quadratic
     formula. The closed form differs from landFrames' running sum by rounding only, so whenever a deciding value is within LAND_EPS of 0
     the exact loop decides instead.'''
@@ -593,6 +593,39 @@ def landFramesPath(vy, rel, t0, K, A, Z):
     if abs(rel + pathSum(vy, K, t)) < LAND_EPS or (t > t0 and abs(rel + pathSum(vy, K, t - 1)) < LAND_EPS):
         return landFrames(vy, rel)
     return t
+
+
+@njit(cache=True)
+def landFramesPath(vy, rel, t0, K, A, Z):
+    '''Same result as landFrames(vy, rel) (and as landFramesPathChecked), faster: the quadratic-formula guess is verified with ONE pathSum
+    (s = rel + S_t, and S_(t-1) = S_t - v_t) instead of the up-to-five calls of the checked version. The guess is accepted only when
+    s >= 0 and (t == t0 or rel + S_(t-1) < 0) with both values more than LAND_EPS away from 0; every other case (a corrected guess, a value
+    within LAND_EPS of 0) goes to landFramesPathChecked, which corrects the guess and falls back to the exact loop near boundaries.
+    t == t0 needs no check of S_(t-1): it is 'before' (rel + A), already known to be < -LAND_EPS at that point.'''
+    if t0 < 0:
+        return landFrames(vy, rel)
+    if t0 > LAND_TMAX:
+        return 0
+    before = rel + A
+    if before > -LAND_EPS:
+        if before < LAND_EPS:
+            return landFrames(vy, rel)
+        return 0
+    last = rel + Z
+    if last < LAND_EPS:
+        if last > -LAND_EPS:
+            return landFrames(vy, rel)
+        return 0
+    b = vy + GRAVITY / 2
+    d = b * b - 2 * GRAVITY * rel
+    t = int(np.ceil((-b + np.sqrt(d)) / GRAVITY)) if d >= 0 else t0
+    if t > K:
+        t = K + int(np.ceil(-(rel + pathSum(vy, K, K)) / MAX_FALL_SPEED))
+    t = min(max(t, t0), LAND_TMAX)
+    s = rel + pathSum(vy, K, t)
+    if s >= LAND_EPS and (t == t0 or s - (vy + t * GRAVITY if t <= K else MAX_FALL_SPEED) < -LAND_EPS):
+        return t
+    return landFramesPathChecked(vy, rel, t0, K, A, Z)
 
 
 @njit(cache=True)
@@ -775,7 +808,7 @@ def decideTargets(F, I, PL, alive, votes):
 
 
 @njit(cache=True)
-def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, out, out64,
+def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, out,
                     stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
     '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n). decide (target mode): the votes
     y[:, 2:7] pick targets. Steer smoothing (smooth < 1: applied[g] += smooth * (steer - applied[g])), 'repeat' frames, then the finished games are
@@ -803,18 +836,15 @@ def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, 
         if I[g, DONE] == 0:
             alive[k] = g
             k += 1
-    observeFloat32(F, I, PL, MO, alive, k, out, out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
+    observeFloat32(F, I, PL, MO, alive, k, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
     return k
 
 
 @njit(cache=True)
-def observeFloat32(F, I, PL, MO, alive, n, out, out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
-    '''observeMany for alive[:n] into out64, then copied to out[:n] as float32.'''
-    out64[:n] = 0.0
-    observeMany(F, I, PL, MO, alive[:n], out64, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
-    for a in range(n):
-        for c in range(out.shape[1]):
-            out[a, c] = np.float32(out64[a, c])
+def observeFloat32(F, I, PL, MO, alive, n, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
+    '''observeMany for alive[:n] straight into the float32 array out[:n]. The observation is computed in float64 and rounded on the store, the same
+    rounding as np.float32(x) of the float64 value; every column is written for every game, so no zeroing is needed.'''
+    observeMany(F, I, PL, MO, alive[:n], out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
 
 
 @njit(cache=True)
@@ -876,9 +906,8 @@ class FastBatch:
         row a = observation of game alive[a]; only the first n rows are valid, n = the number stepObserve returned last (G at the start).'''
         self.loopMode = self.observeMode(nIn)
         self.obs = np.zeros((self.G, nIn), dtype=np.float32)
-        self.obs64 = np.zeros((self.G, nIn))
         alive = np.arange(self.G, dtype=np.int64)
-        observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs, self.obs64, *self.loopMode)
+        observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs, *self.loopMode)
         return alive, self.obs
 
     def stepObserve(self, alive, n, y, applied, smooth, repeat=1, decide=False):
@@ -887,7 +916,7 @@ class FastBatch:
         alive[:n] in place, writes the next observations to obs[:k] (the array startLoop returned) and returns k.
         decide: target mode, outputs 2..6 are the slot votes (as decide()).'''
         return stepObserveMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, n, np.ascontiguousarray(y, dtype=np.float32), applied,
-                               float(smooth), repeat, self.maxNoProgress, bool(decide), self.obs, self.obs64, *self.loopMode)
+                               float(smooth), repeat, self.maxNoProgress, bool(decide), self.obs, *self.loopMode)
 
     def decide(self, alive, votes):
         decideTargets(self.F, self.I, self.PL, alive, np.ascontiguousarray(votes, dtype=np.float64))
