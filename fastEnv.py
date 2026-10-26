@@ -316,18 +316,32 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     nB = k
     bulletGone = 0
     monsterHit = 0
-    for i in range(nB):
-        bx = BU[g, i, 0]
-        by = BU[g, i, 1]
-        for j in range(nM):
-            if (bulletGone >> i) & 1 or (monsterHit >> j) & 1:
-                continue
-            mx = MO[g, j, 0]
+    if nB > 0 and nM > 0:
+        # a bullet can hit a monster only if by < my + MONSTER_HEIGHT and by + BULLET_HEIGHT > my: with the monsters' lowest / highest y, a bullet
+        # clear of that whole band cannot hit any (the same float expressions as in the test below; adding a constant is monotone), so it is skipped
+        loY = hiY = MO[g, 0, 1]
+        for j in range(1, nM):
             my = MO[g, j, 1]
-            if bx < mx + MONSTER_WIDTH and bx + BULLET_WIDTH > mx and by < my + MONSTER_HEIGHT and by + BULLET_HEIGHT > my:
-                bulletGone |= 1 << i
-                monsterHit |= 1 << j
-                total += MONSTER_KILL_BONUS
+            if my < loY:
+                loY = my
+            if my > hiY:
+                hiY = my
+        hiEdge = hiY + MONSTER_HEIGHT
+        for i in range(nB):
+            by = BU[g, i, 1]
+            if by >= hiEdge or by + BULLET_HEIGHT <= loY:
+                continue
+            bx = BU[g, i, 0]
+            for j in range(nM):
+                if (monsterHit >> j) & 1:
+                    continue
+                mx = MO[g, j, 0]
+                my = MO[g, j, 1]
+                if bx < mx + MONSTER_WIDTH and bx + BULLET_WIDTH > mx and by < my + MONSTER_HEIGHT and by + BULLET_HEIGHT > my:
+                    bulletGone |= 1 << i
+                    monsterHit |= 1 << j
+                    total += MONSTER_KILL_BONUS
+                    break    # this bullet is used up (the old loop skipped its remaining monsters through the bulletGone bit)
     if bulletGone != 0:
         k = 0
         for i in range(nB):
