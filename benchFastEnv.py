@@ -4,6 +4,7 @@ Speed benchmark for fastEnv.py (needs only numpy, numba and scipy; no torch, no 
     python benchFastEnv.py profile            where the time goes (whole evaluation + parts on a frozen mid-game state), current fastEnv.py
     python benchFastEnv.py ab                 old fastEnv (git: main) against the current file, alternating rounds, scores must be identical
     python benchFastEnv.py ab --old FILE      the old version from a file instead of git
+    python benchFastEnv.py group              k children one by one against k children in one lockstep loop (FastBatch.runGroup), scores must be identical
 
 Plays the current best Sprudler net (bench/net_repeat5_36k.npz: 33-33-33-33-2, landing layout, action repeat 5, smoothing 0.96875)
 exactly like proSprudler.evaluateNetworkFast does, in ONE process, so run it on an otherwise idle machine. Exact comparisons need
@@ -237,6 +238,66 @@ def overhead(fe, net):
         print(f"  pieces with 1 game alive (new way): forwardNegated {tNeg:.1f} us, np.exp (+2 small copies) {tExp:.1f} us, stepObserveMany(fromExp) incl. np.exp {tStepE:.1f} us")
 
 
+def makeChildren(net, k, sigma=0.05, seed=0):
+    '''k ES-like children of the net: weights + sigma * noise (float32).'''
+    wTs, bs = net
+    rng = np.random.RandomState(seed)
+    kids = []
+    for _ in range(k):
+        kids.append((tuple((w + rng.randn(*w.shape).astype(np.float32) * np.float32(sigma)).astype(np.float32) for w in wTs),
+                     tuple((b + rng.randn(*b.shape).astype(np.float32) * np.float32(sigma)).astype(np.float32) for b in bs)))
+    return kids
+
+
+def stack(kids):
+    nL = len(kids[0][0])
+    return (tuple(np.ascontiguousarray(np.stack([kid[0][L] for kid in kids])) for L in range(nL)),
+            tuple(np.ascontiguousarray(np.stack([kid[1][L] for kid in kids])) for L in range(nL)))
+
+
+def playGroup(fe, kids, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=100_000):
+    '''k children in ONE FastBatch / one loop (FastBatch.runGroup). Returns (scores [k, S], seconds).'''
+    k, S = len(kids), len(seeds)
+    ws, bs = stack(kids)
+    t0 = pc()
+    b = fe.FastBatch(list(seeds) * k, maxStart, minStart, zero, 0.0, 1.0, stable=LAYOUT)
+    alive, obs = b.startLoop(N_IN)
+    applied = np.full(k * S, 0.5)
+    b.runGroup(alive, len(alive), ws, bs, S, applied, SMOOTH, REPEAT, False, 0, maxFrames)
+    return b.scores().reshape(k, S).copy(), pc() - t0
+
+
+def group(fe, net, rounds):
+    cases = ((50, (2, 3, 4, 8)), (200, (2, 4)))
+    for S, ks in cases:
+        for k in ks:
+            kids = makeChildren(net, k)
+            playGroup(fe, kids[:2], list(range(S)))
+            for kid in kids[:2]:
+                play(fe, kid, list(range(S)))                                   # compile
+            single, grouped, same = [], [], True
+            for r in range(rounds):
+                seeds = [int(x) for x in np.random.RandomState(200 + r).randint(0, 2 ** 31, S)]
+                order = ("single", "group") if r % 2 == 0 else ("group", "single")
+                for name in order:
+                    if name == "single":
+                        t, sc = 0.0, []
+                        for kid in kids:
+                            sco, dt, _, _ = play(fe, kid, seeds)
+                            t += dt; sc.append(sco)
+                        single.append(t); resS = np.array(sc)
+                    else:
+                        resG, dt = playGroup(fe, kids, seeds)
+                        grouped.append(dt)
+                if not np.array_equal(resS, resG):
+                    same = False
+                    print(f"  !! scores differ in round {r} (k={k}, {S} games)")
+            sg, gp = np.array(single), np.array(grouped)
+            print(f"{S:3d} games per child, group of {k}: one by one {sg.mean() / k * 1e3:7.1f} ms per child (min {sg.min() / k * 1e3:.1f})  "
+                  f"grouped {gp.mean() / k * 1e3:7.1f} ms per child (min {gp.min() / k * 1e3:.1f})  -> {(sg.mean() / gp.mean() - 1) * 100:+5.1f}% faster "
+                  f"(by min {(sg.min() / gp.min() - 1) * 100:+5.1f}%)  scores identical: {'YES' if same else 'NO'}")
+
+
 def ab(new, old, net, rounds):
     cases = (("start 0", None, 0, 0.0), ("hard starts 20-30k + half from 0", 30000, 20000, 0.5))
     play(new, net, list(range(50)))
@@ -262,7 +323,7 @@ def ab(new, old, net, rounds):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("profile", "ab"))
+    ap.add_argument("mode", choices=("profile", "ab", "group"))
     ap.add_argument("--old", help="old fastEnv.py (default: `git show main:fastEnv.py`)")
     ap.add_argument("--rounds", type=int, default=8)
     ap.add_argument("--games", type=int, default=200, help="games per evaluation (training now uses 50 per child)")
@@ -271,7 +332,9 @@ if __name__ == "__main__":
     header()
     net = loadNet()
     new = loadModule(os.path.join(HERE, "fastEnv.py"), "fastEnv")
-    if a.mode == "profile":
+    if a.mode == "group":
+        group(new, net, a.rounds)
+    elif a.mode == "profile":
         profile(new, net, a.rounds)
         overhead(new, net)
     else:

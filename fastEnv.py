@@ -899,6 +899,28 @@ def forwardNegated(x, ws, bs):
 
 
 @njit(cache=True)
+def forwardGroupNegated(obs, alive, n, S, ws, bs, out):
+    '''forwardNegated for a GROUP of networks in one call. The group's games sit in one FastBatch: child c owns games c*S .. (c+1)*S - 1, and
+    alive[:n] keeps the games in order, so the games of one child are always one contiguous run of rows of obs. ws[L] is [k, in, out] (float32,
+    the k networks' transposed weights stacked), bs[L] is [k, out]. For every run the same BLAS calls as forwardNegated make (same number of rows
+    as when that child plays alone), so every output is bit for bit what the child would get alone; -logits go to out[a] (row a = game alive[a]).'''
+    last = len(ws) - 1
+    a = 0
+    while a < n:
+        c = alive[a] // S
+        b = a + 1
+        while b < n and alive[b] // S == c:
+            b += 1
+        x = obs[a:b]
+        for L in range(len(ws)):
+            x = np.dot(x, ws[L][c]) + bs[L][c]
+            if L < last:
+                x = np.maximum(x, np.float32(0.0))
+        out[a:b, :] = -x
+        a = b
+
+
+@njit(cache=True)
 def unit(e, fromExp):
     '''The network output: e itself, or 1 / (1 + e) when e = exp(-logit) (float32 arithmetic, as numpy's 1 / (1 + e) on a float32 array).'''
     return np.float32(1.0) / (np.float32(1.0) + e) if fromExp else e
@@ -972,6 +994,23 @@ class FastBatch:
         with np.errstate(over="ignore"):
             while n and frames < stop:
                 e = forwardNegated(obs[:n], wTs, bs)
+                np.exp(e, out=e)
+                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, decide, True, obs, *mode)
+                frames += repeat
+        return n, frames
+
+    def runGroup(self, alive, n, wsStack, bsStack, S, applied, smooth, repeat, decide, frames, stop):
+        '''run() for a batch made of k = G / S children that play the same S seeds one after another in the seed list (seeds * k): wsStack / bsStack
+        are tuples of the layers' weights [k, in, out] and biases [k, out] of the k networks (float32, C order). One np.exp, one stepObserveMany
+        and one loop iteration serve all k children per decision; the matmuls stay one set per child (forwardGroupNegated).'''
+        obs, mode = self.obs, self.loopMode
+        F, I, PL, MO, BU, MT, maxNoProgress = self.F, self.I, self.PL, self.MO, self.BU, self.MT, self.maxNoProgress
+        smooth, decide = float(smooth), bool(decide)
+        out = np.empty((self.G, wsStack[-1].shape[2]), dtype=np.float32)
+        with np.errstate(over="ignore"):
+            while n and frames < stop:
+                forwardGroupNegated(obs, alive, n, S, wsStack, bsStack, out)
+                e = out[:n]
                 np.exp(e, out=e)
                 n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, decide, True, obs, *mode)
                 frames += repeat
