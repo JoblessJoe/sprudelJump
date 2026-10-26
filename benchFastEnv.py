@@ -190,13 +190,17 @@ def overhead(fe, net):
             fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, m, b.obs, *b.loopMode)
             k, steps, gd = m, 0, 0
             t = pc()
-            for _ in range(30):
-                if k == 0:
-                    break
-                x = forward(fe, b.obs[:k], wTs, bs)
-                gd += k
-                k = b.stepObserve(al, k, x, ap_, SMOOTH, REPEAT, decide=False)
-                steps += 1
+            if hasattr(b, "run"):    # the current loop; games rarely end within 30 decisions of this state, so m is the number alive throughout
+                b.run(al, k, wTs, bs, ap_, SMOOTH, REPEAT, False, 0, 30 * REPEAT)
+                steps, gd = 30, 30 * m
+            else:
+                for _ in range(30):
+                    if k == 0:
+                        break
+                    x = forward(fe, b.obs[:k], wTs, bs)
+                    gd += k
+                    k = b.stepObserve(al, k, x, ap_, SMOOTH, REPEAT, decide=False)
+                    steps += 1
             el = pc() - t
             best = min(best, el / steps * 1e6)
             avgAlive = gd / steps
@@ -221,7 +225,16 @@ def overhead(fe, net):
             return 1 / (1 + np.exp(-xl))
     tSig = tm(sig)
     tStep = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, x1, ap_, SMOOTH, REPEAT, b.maxNoProgress, False, False, b.obs, *b.loopMode))
-    print(f"  pieces with 1 game alive: compiled forward {tLog:.1f} us, numpy sigmoid {tSig:.1f} us, stepObserveMany (the game itself, 1 game) {tStep:.1f} us")
+    print(f"  pieces with 1 game alive (old way): compiled forward {tLog:.1f} us, numpy sigmoid {tSig:.1f} us, stepObserveMany (the game itself, 1 game) {tStep:.1f} us")
+    if hasattr(fe, "forwardNegated"):
+        eNeg = fe.forwardNegated(b.obs[:1], wTs, bs)
+        tNeg = tm(lambda: fe.forwardNegated(b.obs[:1], wTs, bs))
+        def expInPlace():
+            with np.errstate(over="ignore"):
+                np.exp(eNeg.copy(), out=eNeg.copy())
+        tExp = tm(expInPlace)
+        tStepE = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, np.exp(eNeg), ap_, SMOOTH, REPEAT, b.maxNoProgress, False, True, b.obs, *b.loopMode))
+        print(f"  pieces with 1 game alive (new way): forwardNegated {tNeg:.1f} us, np.exp (+2 small copies) {tExp:.1f} us, stepObserveMany(fromExp) incl. np.exp {tStepE:.1f} us")
 
 
 def ab(new, old, net, rounds):
