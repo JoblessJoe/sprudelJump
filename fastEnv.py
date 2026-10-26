@@ -832,9 +832,9 @@ def decideTargets(F, I, PL, alive, votes):
 
 
 @njit(cache=True)
-def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, out,
+def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, fromExp, out,
                     stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
-    '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n). decide (target mode): the votes
+    '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n), or exp(-logit) with fromExp (see forwardNegated). decide (target mode): the votes
     y[:, 2:7] pick targets. Steer smoothing (smooth < 1: applied[g] += smooth * (steer - applied[g])), 'repeat' frames, then the finished games are
     dropped from alive[:n] (order kept) and the observation of the remaining ones is written to out[:k] as float32. Returns k.
     Same arithmetic as observe -> astype(float32) -> decide -> smoothing -> step -> filter, so the scores stay bit-identical.'''
@@ -842,16 +842,16 @@ def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, 
         votes = np.empty((n, 5))
         for a in range(n):
             for j in range(5):
-                votes[a, j] = np.float64(y[a, 2 + j])
+                votes[a, j] = np.float64(unit(y[a, 2 + j], fromExp))
         decideTargets(F, I, PL, alive[:n], votes)
     k = 0
     for a in range(n):
         g = alive[a]
-        steer = np.float64(y[a, 0])
+        steer = np.float64(unit(y[a, 0], fromExp))
         if smooth < 1.0:
             applied[g] += smooth * (steer - applied[g])
             steer = applied[g]
-        shoot = np.float64(y[a, 1])
+        shoot = np.float64(unit(y[a, 1], fromExp))
         I[g, BOUNCED] = 0
         for _ in range(repeat):
             if stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
@@ -883,6 +883,25 @@ def forwardLogits(x, ws, bs):
         if L < last:
             x = np.maximum(x, np.float32(0.0))
     return x
+
+
+@njit(cache=True)
+def forwardNegated(x, ws, bs):
+    '''forwardLogits, returning -logits (a negation is exact). With np.exp (numpy's own float32 exp, in place) and stepObserveMany(fromExp=True)
+    this makes sigmoid(logits) = 1 / (1 + exp(-logits)) without the four numpy calls of the sigmoid: the add and the divide are plain IEEE float32
+    operations, the same bits compiled or in numpy; only the exp must stay numpy's.'''
+    last = len(ws) - 1
+    for L in range(len(ws)):
+        x = np.dot(x, ws[L]) + bs[L]
+        if L < last:
+            x = np.maximum(x, np.float32(0.0))
+    return -x
+
+
+@njit(cache=True)
+def unit(e, fromExp):
+    '''The network output: e itself, or 1 / (1 + e) when e = exp(-logit) (float32 arithmetic, as numpy's 1 / (1 + e) on a float32 array).'''
+    return np.float32(1.0) / (np.float32(1.0) + e) if fromExp else e
 
 
 class FastBatch:
@@ -934,13 +953,29 @@ class FastBatch:
         observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs, *self.loopMode)
         return alive, self.obs
 
-    def stepObserve(self, alive, n, y, applied, smooth, repeat=1, decide=False):
+    def stepObserve(self, alive, n, y, applied, smooth, repeat=1, decide=False, fromExp=False):
         '''One call instead of decide + step + done-filter + observe: y = network output [n, nOut] for the games alive[:n].
         applied = float64 [G] smoothed steer per game (changed in place; smooth >= 1 = no smoothing). Drops the finished games from
         alive[:n] in place, writes the next observations to obs[:k] (the array startLoop returned) and returns k.
         decide: target mode, outputs 2..6 are the slot votes (as decide()).'''
         return stepObserveMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, n, np.ascontiguousarray(y, dtype=np.float32), applied,
-                               float(smooth), repeat, self.maxNoProgress, bool(decide), self.obs, *self.loopMode)
+                               float(smooth), repeat, self.maxNoProgress, bool(decide), bool(fromExp), self.obs, *self.loopMode)
+
+    def run(self, alive, n, wTs, bs, applied, smooth, repeat, decide, frames, stop):
+        '''The evaluation loop (forward -> step -> observe) until n == 0 or frames >= stop; returns (n, frames). Same results as
+        `x = sigmoid(forwardLogits(...)); n = stepObserve(...)` per decision, with the per-decision Python work cut down: the sigmoid is
+        split into forwardNegated + np.exp (in place, numpy's own float32 exp) + the finish inside stepObserveMany, and numpy's overflow
+        handling is switched once for the whole call. wTs / bs: tuples of transposed float32 weights and float32 biases (see forwardLogits).'''
+        obs, mode = self.obs, self.loopMode
+        F, I, PL, MO, BU, MT, maxNoProgress = self.F, self.I, self.PL, self.MO, self.BU, self.MT, self.maxNoProgress
+        smooth, decide = float(smooth), bool(decide)
+        with np.errstate(over="ignore"):
+            while n and frames < stop:
+                e = forwardNegated(obs[:n], wTs, bs)
+                np.exp(e, out=e)
+                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, decide, True, obs, *mode)
+                frames += repeat
+        return n, frames
 
     def decide(self, alive, votes):
         decideTargets(self.F, self.I, self.PL, alive, np.ascontiguousarray(votes, dtype=np.float64))

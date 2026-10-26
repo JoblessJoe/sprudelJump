@@ -60,6 +60,9 @@ def play(fe, net, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=100_000,
     frames = decisions = 0
     tFwd = 0.0
     t0 = pc()
+    if hasattr(b, "run") and not timed:    # the current evaluation loop (see FastBatch.run); the old fastEnv has only the loop below
+        n, frames = b.run(alive, n, wTs, bs, applied, SMOOTH, REPEAT, False, 0, maxFrames)
+        return b.scores().copy(), pc() - t0, tFwd, frames // REPEAT
     while n and frames < maxFrames:
         if timed:
             t1 = pc()
@@ -133,7 +136,7 @@ def profile(fe, net, rounds):
     physics = lambda: fe.stepMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), steer, shoot, REPEAT, b.maxNoProgress)
     observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32, *b.loopMode)
     fused = lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), n, x, np.full(GAMES, 0.5), SMOOTH, REPEAT, b.maxNoProgress,
-                                       False, out32, *b.loopMode)
+                                       False, False, out32, *b.loopMode)
     fwd = lambda: forward(fe, obs[:n], wTs, bs)
     base = timeit(restore, withRestore=False)
     tPhys = timeit(physics, withRestore=True) - base
@@ -155,6 +158,70 @@ def profile(fe, net, rounds):
     print(f"  observation without landing prediction: {tObsNoLand * 1e6:.1f} us  -> landing prediction = {(tObs - tObsNoLand) * 1e6:.1f} us "
           f"({(tObs - tObsNoLand) / tObs * 100:.0f}% of the observation, {(tObs - tObsNoLand) / total * 100:.0f}% of a decision)")
     print(f"  observeMany alone (no zeroing / float32 copy): {tObsRaw * 1e6:.1f} us -> zero + copy = {(tObs - tObsRaw) * 1e6:.1f} us")
+
+
+def overhead(fe, net):
+    '''Cost of ONE decision (forward + sigmoid + stepObserve, as in play()) against the number of games still alive: the intercept is the fixed
+    cost per decision (Python loop, numpy calls, dispatch), the slope the cost per game. Matters because the longest game of a batch keeps the
+    loop running while few games are left.'''
+    wTs, bs = net
+    seeds = [int(s) for s in np.random.RandomState(3).randint(0, 2 ** 31, 200)]
+    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0, stable=LAYOUT)
+    alive, obs = b.startLoop(N_IN)
+    n = len(alive)
+    applied = np.full(200, 0.5)
+    for _ in range(300):
+        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT, decide=False)
+    arrays = (b.F, b.I, b.PL, b.MO, b.BU, b.MT)
+    snap = [a.copy() for a in arrays]
+    al0 = alive[:n].copy()
+    print(f"\ncost of one decision against the games still alive (30 decisions from a frozen state at decision 300, best of 7):")
+    print(f"  {'games alive':>11s} {'us per decision':>16s} {'ns per game':>12s}")
+    xs, ys = [], []
+    for m in (1, 2, 5, 10, 25, 50, 100, 200):
+        if m > len(al0):
+            continue
+        best = float("inf")
+        for rep in range(7):
+            for a, v in zip(arrays, snap):
+                a[...] = v
+            al = al0[:m].copy()
+            ap_ = np.full(200, 0.5)
+            fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, m, b.obs, *b.loopMode)
+            k, steps, gd = m, 0, 0
+            t = pc()
+            for _ in range(30):
+                if k == 0:
+                    break
+                x = forward(fe, b.obs[:k], wTs, bs)
+                gd += k
+                k = b.stepObserve(al, k, x, ap_, SMOOTH, REPEAT, decide=False)
+                steps += 1
+            el = pc() - t
+            best = min(best, el / steps * 1e6)
+            avgAlive = gd / steps
+        xs.append(avgAlive); ys.append(best)
+        print(f"  {avgAlive:11.1f} {best:16.1f} {best / avgAlive * 1e3:12.0f}")
+    slope, icpt = np.polyfit(xs, ys, 1)
+    print(f"  fit: {icpt:.1f} us fixed per decision + {slope * 1e3:.0f} ns per game")
+    # the pieces of the fixed cost, with one game alive
+    for a, v in zip(arrays, snap):
+        a[...] = v
+    al = al0[:1].copy(); ap_ = np.full(200, 0.5)
+    fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, 1, b.obs, *b.loopMode)
+    x1 = forward(fe, b.obs[:1], wTs, bs)
+    def tm(f, reps=3000):
+        f(); t = pc()
+        for _ in range(reps): f()
+        return (pc() - t) / reps * 1e6
+    tLog = tm(lambda: fe.forwardLogits(b.obs[:1], wTs, bs)) if hasattr(fe, "forwardLogits") else float("nan")
+    xl = fe.forwardLogits(b.obs[:1], wTs, bs) if hasattr(fe, "forwardLogits") else None
+    def sig():
+        with np.errstate(over="ignore"):
+            return 1 / (1 + np.exp(-xl))
+    tSig = tm(sig)
+    tStep = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, x1, ap_, SMOOTH, REPEAT, b.maxNoProgress, False, False, b.obs, *b.loopMode))
+    print(f"  pieces with 1 game alive: compiled forward {tLog:.1f} us, numpy sigmoid {tSig:.1f} us, stepObserveMany (the game itself, 1 game) {tStep:.1f} us")
 
 
 def ab(new, old, net, rounds):
@@ -185,12 +252,15 @@ if __name__ == "__main__":
     ap.add_argument("mode", choices=("profile", "ab"))
     ap.add_argument("--old", help="old fastEnv.py (default: `git show main:fastEnv.py`)")
     ap.add_argument("--rounds", type=int, default=8)
+    ap.add_argument("--games", type=int, default=200, help="games per evaluation (training now uses 50 per child)")
     a = ap.parse_args()
+    GAMES = a.games
     header()
     net = loadNet()
     new = loadModule(os.path.join(HERE, "fastEnv.py"), "fastEnv")
     if a.mode == "profile":
         profile(new, net, a.rounds)
+        overhead(new, net)
     else:
         old = loadModule(a.old or gitOld(), "fastEnv_old")
         ab(new, old, net, a.rounds)
