@@ -1,0 +1,187 @@
+'''
+Speed benchmark for fastEnv.py (needs only numpy, numba and scipy; no torch, no tensorNetwork checkout).
+
+    python benchFastEnv.py profile            where the time goes (whole evaluation + parts on a frozen mid-game state), current fastEnv.py
+    python benchFastEnv.py ab                 old fastEnv (git: main) against the current file, alternating rounds, scores must be identical
+    python benchFastEnv.py ab --old FILE      the old version from a file instead of git
+
+Plays the current best Sprudler net (bench/net_repeat5_36k.npz: 33-33-33-33-2, landing layout, action repeat 5, smoothing 0.96875)
+exactly like proSprudler.evaluateNetworkFast does, in ONE process, so run it on an otherwise idle machine. Exact comparisons need
+single-threaded BLAS (set below). The absolute numbers depend on the machine; only the old/new RATIO transfers between machines.
+'''
+import os
+for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
+    os.environ.setdefault(var, "1")
+import sys, time, argparse, importlib.util, subprocess, platform
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+NET = os.path.join(HERE, "bench", "net_repeat5_36k.npz")
+LAYOUT, REPEAT, SMOOTH, N_IN = (3, 2, 1, 2, 0, 1), 5, 1 - 0.5 ** 5, 33
+GAMES = 200
+pc = time.perf_counter
+
+
+def loadModule(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def loadNet():
+    d = np.load(NET)
+    n = len([k for k in d.files if k.startswith("w")])
+    return tuple(d[f"w{i}"].T.copy() for i in range(n)), tuple(d[f"b{i}"] for i in range(n))
+
+
+def forward(fe, x, wTs, bs):
+    '''Network output like evaluateNetworkFast: compiled matmuls, numpy's own float32 sigmoid.'''
+    if hasattr(fe, "forwardLogits"):
+        x = fe.forwardLogits(x, wTs, bs)
+    else:
+        for L, (wT, b) in enumerate(zip(wTs, bs)):
+            x = x @ wT + b
+            if L < len(wTs) - 1:
+                x = np.maximum(x, 0)
+    with np.errstate(over="ignore"):
+        return 1 / (1 + np.exp(-x))
+
+
+def play(fe, net, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=100_000, timed=False):
+    '''One full evaluation. Returns (scores, seconds, forwardSeconds, decisions).'''
+    wTs, bs = net
+    b = fe.FastBatch(seeds, maxStart, minStart, zero, 0.0, 1.0, stable=LAYOUT)
+    alive, obs = b.startLoop(N_IN)
+    n = len(alive)
+    applied = np.full(len(seeds), 0.5)
+    frames = decisions = 0
+    tFwd = 0.0
+    t0 = pc()
+    while n and frames < maxFrames:
+        if timed:
+            t1 = pc()
+        x = forward(fe, obs[:n], wTs, bs)
+        if timed:
+            tFwd += pc() - t1
+        n = b.stepObserve(alive, n, x, applied, SMOOTH, REPEAT, decide=False)
+        frames += REPEAT
+        decisions += 1
+    return b.scores().copy(), pc() - t0, tFwd, decisions
+
+
+def gitOld():
+    '''The old fastEnv.py from git (branch main), saved next to a private cache dir so numba caches both versions separately.'''
+    os.makedirs(os.path.join(HERE, "bench", "_old"), exist_ok=True)
+    path = os.path.join(HERE, "bench", "_old", "fastEnv_old.py")
+    src = subprocess.run(["git", "show", "main:fastEnv.py"], cwd=HERE, capture_output=True, text=True, check=True).stdout
+    with open(path, "w") as f:
+        f.write(src)
+    return path
+
+
+def header():
+    print(f"machine: {platform.processor() or platform.machine()}, python {platform.python_version()}, numpy {np.__version__}")
+    import numba
+    print(f"numba {numba.__version__}, single-threaded BLAS ({os.environ['OPENBLAS_NUM_THREADS']}), {GAMES} games per evaluation, "
+          f"repeat {REPEAT}, landing layout {LAYOUT}\n")
+
+
+def profile(fe, net, rounds):
+    wTs, bs = net
+    seeds = [int(s) for s in np.random.RandomState(1).randint(0, 2 ** 31, GAMES)]
+    play(fe, net, seeds[:20])    # compile everything
+    print("whole evaluation (start 0):")
+    for r in range(rounds):
+        sc, t, tf, dec = play(fe, net, [int(s) for s in np.random.RandomState(r).randint(0, 2 ** 31, GAMES)], timed=True)
+        frames = dec * REPEAT
+        print(f"  round {r}: {t:6.2f} s, mean score {sc.mean():8.0f}, {dec:6d} decisions (longest game), forward {tf / t * 100:4.1f}% of the time, "
+              f"{t / max(1, sc.size) * 1e3:6.1f} ms per game")
+    # frozen mid-game state: play DECISIONS decisions, then time the parts in isolation on copies of that state
+    decisions = 2500
+    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0, stable=LAYOUT)
+    alive, obs = b.startLoop(N_IN)
+    n = len(alive)
+    applied = np.full(GAMES, 0.5)
+    for _ in range(decisions):
+        if not n:
+            break
+        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT, decide=False)
+    print(f"\nparts on a frozen state after {decisions} decisions ({decisions * REPEAT:,} frames), {n} of {GAMES} games still alive:")
+    arrays = (b.F, b.I, b.PL, b.MO, b.BU, b.MT)
+    saved = [a.copy() for a in arrays]
+    al = alive[:n].copy()
+    x = forward(fe, obs[:n], wTs, bs)
+    steer, shoot = x[:, 0].astype(np.float64), x[:, 1].astype(np.float64)
+    out32, out64 = np.zeros((GAMES, N_IN), np.float32), np.zeros((GAMES, N_IN))
+
+    def restore():
+        for a, s in zip(arrays, saved):
+            a[...] = s
+
+    def timeit(f, reps=300, withRestore=False):
+        f()
+        t = pc()
+        for _ in range(reps):
+            if withRestore:
+                restore()
+            f()
+        return (pc() - t) / reps
+
+    physics = lambda: fe.stepMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), steer, shoot, REPEAT, b.maxNoProgress)
+    observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32, out64, *b.loopMode)
+    fused = lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), n, x, np.full(GAMES, 0.5), SMOOTH, REPEAT, b.maxNoProgress,
+                                       False, out32, out64, *b.loopMode)
+    fwd = lambda: forward(fe, obs[:n], wTs, bs)
+    base = timeit(restore, withRestore=False)
+    tPhys = timeit(physics, withRestore=True) - base
+    tObs = timeit(observe)
+    tFused = timeit(fused, withRestore=True) - base
+    tFwd = timeit(fwd)
+    print(f"  {'part':34s} {'us per decision':>16s} {'ns per game':>12s} {'share of one decision':>22s}")
+    total = tFwd + tFused
+    for name, t in (("physics only (stepMany, 5 frames)", tPhys), ("observation only", tObs), ("fused step + observe (what runs)", tFused),
+                    ("network forward + sigmoid", tFwd)):
+        print(f"  {name:34s} {t * 1e6:16.1f} {t / n * 1e9:12.0f} {t / total * 100:21.1f}%")
+    print(f"  physics per game-frame: {tPhys / n / REPEAT * 1e9:.0f} ns")
+
+
+def ab(new, old, net, rounds):
+    cases = (("start 0", None, 0, 0.0), ("hard starts 20-30k + half from 0", 30000, 20000, 0.5))
+    play(new, net, list(range(50)))
+    play(old, net, list(range(50)))    # compile both
+    allSame = True
+    for label, mx, mn, z in cases:
+        times = {"old": [], "new": []}
+        for r in range(rounds):
+            seeds = [int(s) for s in np.random.RandomState(100 + r).randint(0, 2 ** 31, GAMES)]
+            result = {}
+            for name in (("old", "new") if r % 2 == 0 else ("new", "old")):    # alternate who goes first
+                sc, t, _, _ = play(new if name == "new" else old, net, seeds, mx, mn, z)
+                times[name].append(t)
+                result[name] = sc
+            if not np.array_equal(result["old"], result["new"]):
+                allSame = False
+                print(f"  !! scores differ in round {r} ({label})")
+        o, nw = np.array(times["old"]), np.array(times["new"])
+        print(f"{label:34s} old {o.mean():6.2f} s (min {o.min():.2f})  new {nw.mean():6.2f} s (min {nw.min():.2f})  "
+              f"-> {(o.mean() / nw.mean() - 1) * 100:+.1f}% faster (by min: {(o.min() / nw.min() - 1) * 100:+.1f}%)   noise: old +-{o.std() / o.mean() * 100:.1f}%, new +-{nw.std() / nw.mean() * 100:.1f}%")
+    print("\nscores identical in every game:", "YES" if allSame else "NO  <-- not a valid optimization")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=("profile", "ab"))
+    ap.add_argument("--old", help="old fastEnv.py (default: `git show main:fastEnv.py`)")
+    ap.add_argument("--rounds", type=int, default=8)
+    a = ap.parse_args()
+    header()
+    net = loadNet()
+    new = loadModule(os.path.join(HERE, "fastEnv.py"), "fastEnv")
+    if a.mode == "profile":
+        profile(new, net, a.rounds)
+    else:
+        old = loadModule(a.old or gitOld(), "fastEnv_old")
+        ab(new, old, net, a.rounds)

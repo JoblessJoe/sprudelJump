@@ -6,3 +6,5 @@ __pycache__/
 CLAUDE.md
 plan/
 testFiles/
+bench/_old/
+bench/results_*.txt
