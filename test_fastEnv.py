@@ -23,6 +23,7 @@ CONFIGS = [
     dict(stable=(4, 3, 1, 2, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, other slot counts
     dict(stable=(1, 1, 4, 4, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, extreme counts (many empty slots)
     dict(stable=(1, 1, 4, 4), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # extreme counts: many missing-slot paddings
+    dict(stable=(3, 2, 1, 2, 0, 1), maxStart=None, minStart=0, zero=0.0, mf=1.0, mm=4.0),     # monster-heavy levels (bullets vs monsters at the top edge)
 ]
 POLICIES = {
     "random": lambda rng, f: [rng.random(), 1.0 if rng.random() > 0.5 else 0.0],

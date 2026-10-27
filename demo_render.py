@@ -125,7 +125,10 @@ def load_model_policy(path, smoothing=1.0):
     return policy
 
 
-def main(modelPath=None, stable=False, smoothing=1.0, repeat=1):
+DEFAULT_SLOTS = (3, 2, 1, 2, 0, 1)    # the observation layout of the current nets (33 inputs)
+
+
+def main(modelPath=None, stable=DEFAULT_SLOTS, smoothing=0.96875, repeat=5, speed=1):
     if pygame is None:
         print("pygame not installed; demo_render.py is optional. Use env.py directly.")
         return
@@ -162,6 +165,10 @@ def main(modelPath=None, stable=False, smoothing=1.0, repeat=1):
     def sfx(name):
         if name in sndBank:
             sndBank[name].play()
+
+    def ping(name):    # sound effects of single frames: silent when sped up (dozens of frames per picture would only be noise)
+        if speed == 1:
+            sfx(name)
 
 
     def draw_world():
@@ -235,59 +242,61 @@ def main(modelPath=None, stable=False, smoothing=1.0, repeat=1):
             newBest = False
             autoRestart = False
 
-        if policy:
-            if frameInRepeat == 0:
-                steer, shootOut = policy(state, env)
-                held = (steer, 1.0 if shootOut > 0.5 else 0.0)
-            steer, shoot = held
-            frameInRepeat = (frameInRepeat + 1) % repeat
-        else:
-            keys = pygame.key.get_pressed()
-            left = keys[pygame.K_LEFT] or keys[pygame.K_a]
-            right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
-            space = keys[pygame.K_SPACE]
-            shoot = 1.0 if (space and not spaceWas) else 0.0
-            spaceWas = space
-            if left and right:
-                steer = 0.5
-            elif left:
-                steer = 0.0
-            elif right:
-                steer = 1.0
+        for _ in range(speed if policy else 1):    # --speed: several game frames per drawn picture (network play only)
+            if policy:
+                if frameInRepeat == 0:
+                    steer, shootOut = policy(state, env)
+                    held = (steer, 1.0 if shootOut > 0.5 else 0.0)
+                steer, shoot = held
+                frameInRepeat = (frameInRepeat + 1) % repeat
             else:
-                steer = 0.5
-        state, f, done = env.step([steer, shoot])
-        if shoot and env.cooldown == BULLET_COOLDOWN_FRAMES - 1:  # only when a bullet actually fired this frame (cooldown was just reset)
-            sfx("shoot")
-        # A bounce is a single-frame velocity-sign flip (gravity-pulled fall
-        # becomes an upward launch), not "feet above where they were last
-        # frame" -- that stays true for the whole ~20-frame rise of every
-        # jump arc and used to fire the bounce sfx on every one of those
-        # frames (a machine-gun of plops instead of one bounce per landing).
-        bounced = env.velY < 0 <= prevVelY
-        # env.stompCount/bulletKillCount/brokenCount are explicit per-step
-        # event counts, not list-length diffs -- platforms and monsters also
-        # leave their lists when they scroll off the bottom of the screen,
-        # which used to fire "crack"/"hit" on that routine cleanup too (the
-        # phantom "explosion" a beat after every bounce).
-        if env.stompCount > 0:
-            sfx("stomp")           # stomping a monster (bounce + squish)
-        elif bounced:
-            sfx("bounce")          # platform bounce
-        if env.bulletKillCount > 0:
-            sfx("hit")             # bullet kill
-        if env.brokenCount > 0:
-            sfx("crack")
-        prevVelY = env.velY
-        if done:
-            if env.caughtByMonster:
-                sfx("caught")      # a monster got you (distinct from falling off)
-            sfx("die")
-            score = round(f)
-            newBest = score > best and score > 0
-            best = max(best, score)
-            gameOverUntil = now + 1200
-            autoRestart = policy is not None
+                keys = pygame.key.get_pressed()
+                left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+                right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+                space = keys[pygame.K_SPACE]
+                shoot = 1.0 if (space and not spaceWas) else 0.0
+                spaceWas = space
+                if left and right:
+                    steer = 0.5
+                elif left:
+                    steer = 0.0
+                elif right:
+                    steer = 1.0
+                else:
+                    steer = 0.5
+            state, f, done = env.step([steer, shoot])
+            if shoot and env.cooldown == BULLET_COOLDOWN_FRAMES - 1:  # only when a bullet actually fired this frame (cooldown was just reset)
+                ping("shoot")
+            # A bounce is a single-frame velocity-sign flip (gravity-pulled fall
+            # becomes an upward launch), not "feet above where they were last
+            # frame" -- that stays true for the whole ~20-frame rise of every
+            # jump arc and used to fire the bounce sfx on every one of those
+            # frames (a machine-gun of plops instead of one bounce per landing).
+            bounced = env.velY < 0 <= prevVelY
+            # env.stompCount/bulletKillCount/brokenCount are explicit per-step
+            # event counts, not list-length diffs -- platforms and monsters also
+            # leave their lists when they scroll off the bottom of the screen,
+            # which used to fire "crack"/"hit" on that routine cleanup too (the
+            # phantom "explosion" a beat after every bounce).
+            if env.stompCount > 0:
+                ping("stomp")           # stomping a monster (bounce + squish)
+            elif bounced:
+                ping("bounce")          # platform bounce
+            if env.bulletKillCount > 0:
+                ping("hit")             # bullet kill
+            if env.brokenCount > 0:
+                ping("crack")
+            prevVelY = env.velY
+            if done:
+                if env.caughtByMonster:
+                    sfx("caught")      # a monster got you (distinct from falling off)
+                sfx("die")
+                score = round(f)
+                newBest = score > best and score > 0
+                best = max(best, score)
+                gameOverUntil = now + 1200
+                autoRestart = policy is not None
+                break
         draw_world()
         draw_hud()
         pygame.display.flip()
@@ -299,10 +308,9 @@ def main(modelPath=None, stable=False, smoothing=1.0, repeat=1):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Play SprudelJump yourself, or watch a trained network play.")
     parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
-    parser.add_argument("--stable", action="store_true", help="the model was trained with stableSlots=True (fixed-meaning observation slots)")
-    parser.add_argument("--slots", metavar="PB,PA,MB,MA[,OCC,LAND]", help="the model was trained with a custom stableSlots layout (e.g. 3,2,1,2,0,1 for landing prediction); implies --stable")
-    parser.add_argument("--smoothing", type=float, default=1.0, help="steer smoothing the model was trained with (1 = none)")
-    parser.add_argument("--repeat", type=int, default=1, help="action repeat the model was trained with: the network decides every n-th frame and its action is held in between (smoothing is applied once per decision)")
-    a =parser.parse_args()
-    stable = tuple(int(x) for x in a.slots.split(",")) if a.slots else a.stable
-    main(a.model, stable, a.smoothing, a.repeat)
+    parser.add_argument("--slots", metavar="PB,PA,MB,MA[,OCC,LAND]", default="3,2,1,2,0,1", help="observation layout the model was trained with (default 3,2,1,2,0,1 = 33 inputs, the current nets)")
+    parser.add_argument("--smoothing", type=float, default=0.96875, help="steer smoothing the model was trained with (default 0.96875 = action repeat 5, 1 = none)")
+    parser.add_argument("--repeat", type=int, default=5, help="action repeat the model was trained with: the network decides every n-th frame and its action is held in between (smoothing is applied once per decision)")
+    parser.add_argument("--speed", type=int, default=1, help="network play: game frames per drawn picture (e.g. 4 = four times as fast; sounds are muted above 1)")
+    a = parser.parse_args()
+    main(a.model, tuple(int(x) for x in a.slots.split(",")), a.smoothing, a.repeat, max(1, a.speed))

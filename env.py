@@ -205,6 +205,8 @@ class SprudelJumpEnv:
             for m in self.monsters:
                 if b in bulletsGone or m in monstersHit:
                     continue
+                if m[1] + MONSTER_HEIGHT <= 0:    # a monster completely above the screen cannot be hit
+                    continue
                 if b[0] < m[0] + MONSTER_WIDTH and b[0] + BULLET_WIDTH > m[0] and b[1] < m[1] + MONSTER_HEIGHT and b[1] + BULLET_HEIGHT > m[1]:
                     bulletsGone.append(b)
                     monstersHit.append(m)

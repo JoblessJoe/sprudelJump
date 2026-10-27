@@ -14,7 +14,8 @@ Python 3.10+.
 pip install pygame
 python demo_render.py                      # play: ←/→ or A/D to steer, Space to shoot, R to restart
 pip install torch
-python demo_render.py --model best.pt      # watch a trained network play (--stable / --smoothing / --repeat to match its training)
+python demo_render.py --model best.pt      # watch a trained network play; defaults match the current nets (--slots 3,2,1,2,0,1 --repeat 5 --smoothing 0.96875)
+python demo_render.py --model best.pt --speed 4   # four game frames per picture (sound off above 1)
 pip install numpy numba
 python test_fastEnv.py                     # fastEnv vs env.py, frame by frame
 ```
@@ -23,7 +24,7 @@ python test_fastEnv.py                     # fastEnv vs env.py, frame by frame
 
 - **Action:** `[steer, shoot]`, two floats in `[0, 1]`, straight from a 2-output sigmoid network. `steer` 0 = full left, 0.5 = still, 1 = full right. `shoot` > 0.5 fires.
 - **Observation:** 23 floats by default, pre-normalised. Player x and vertical speed, the 5 nearest platforms (relative x, wrap-aware; relative y; breakable) and the 3 nearest monsters, all relative to the player's feet. Options: fixed-meaning slots instead of nearest-first (`stableSlots`), a difficulty input, per-platform landing prediction.
-- **Fitness:** height climbed plus a bonus per monster shot.
+- **Fitness:** height climbed plus a bonus per monster shot. A bullet only kills a monster that is at least partly on the screen; monsters above the top edge cannot be hit.
 - **Episode ends** on falling off the screen, touching a monster, or 600 frames without reaching a new height (stops agents bouncing in place forever).
 - **Difficulty** ramps with height: wider gaps, narrower platforms, more breakable platforms, more monsters.
 - **Seeded:** each env has its own RNG. Same seed = same level, so networks can be compared fairly. `reset()` options for practice: start higher up (`minStartHeight` / `maxStartHeight`), more monsters (`monsterFraction` / `monsterMult`).

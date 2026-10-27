@@ -348,6 +348,8 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                     continue
                 mx = MO[g, j, 0]
                 my = MO[g, j, 1]
+                if my + MONSTER_HEIGHT <= 0:    # completely above the screen: cannot be hit
+                    continue
                 if bx < mx + MONSTER_WIDTH and bx + BULLET_WIDTH > mx and by < my + MONSTER_HEIGHT and by + BULLET_HEIGHT > my:
                     bulletGone |= 1 << i
                     monsterHit |= 1 << j
