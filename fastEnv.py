@@ -44,7 +44,7 @@ GHOST_FLAG, GHOST_X, GHOST_Y, GHOST_W = 8, 9, 10, 11
 TOPY = 7    # y of the topmost platform after the last frame (column 7 was unused)
 # behaviour counters (they only read the game, never change it): bullets fired, bullets fired while no monster was visible on screen, sum of the
 # absolute change of the applied steer between two decisions, the applied steer of the last decision (starts at 0.5 = straight)
-SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER = 12, 13, 14, 15
+SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS = 12, 13, 14, 15, 16    # DECISIONS: network decisions the game lived through
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, NEXTID, TARGET, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
 # platform columns: x, y, width, breakable, id
@@ -455,6 +455,7 @@ def stepMany(F, I, PL, MO, BU, MT, alive, steer, shoot, repeat, maxNoProgress):
         I[g, BOUNCED] = 0
         F[g, STEER_VAR] += abs(steer[a] - F[g, LAST_STEER])
         F[g, LAST_STEER] = steer[a]
+        F[g, DECISIONS] += 1.0
         for _ in range(repeat):
             if stepGame(F, I, PL, MO, BU, MT, g, steer[a], shoot[a], maxNoProgress):
                 I[g, DONE] = 1
@@ -880,6 +881,7 @@ def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, 
             steer = applied[g]
         F[g, STEER_VAR] += abs(steer - F[g, LAST_STEER])
         F[g, LAST_STEER] = steer
+        F[g, DECISIONS] += 1.0
         shoot = np.float64(unit(y[a, 1], fromExp))
         I[g, BOUNCED] = 0
         for _ in range(repeat):
@@ -971,7 +973,7 @@ class FastBatch:
         self.obsLength = (2 + 3 * (self.layout[0] + self.layout[1]) + 2 * (self.layout[2] + self.layout[3])
                           + (self.layout[0] + self.layout[1]) * ((1 if self.occupied else 0) + (2 if self.landing else 0))) if self.stable else 23
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 16))
+        self.F = np.zeros((G, 17))
         self.F[:, LAST_STEER] = 0.5
         self.I = np.zeros((G, 10), dtype=np.int64)
         self.PL = np.zeros((G, MAXP, 5))
@@ -1062,6 +1064,10 @@ class FastBatch:
 
     def scores(self):
         return self.F[:, TOTAL] - self.F[:, OFFSET]
+
+    def decisions(self):
+        '''Per game: how many network decisions it lived through (frames = decisions * action repeat, the last one may be cut short by death).'''
+        return self.F[:, DECISIONS]
 
     def behaviour(self):
         '''Per game: (bullets fired, bullets fired with no monster visible, summed absolute steer change between decisions).'''
