@@ -12,7 +12,7 @@ import art
 import sounds
 from env import (SprudelJumpEnv, SCREEN_WIDTH, SCREEN_HEIGHT,
                  PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_HEIGHT,
-                 BULLET_WIDTH, BULLET_HEIGHT, BULLET_COOLDOWN_FRAMES)
+                 BULLET_WIDTH, BULLET_HEIGHT, BULLET_COOLDOWN_FRAMES, OBSERVATION_LENGTH)
 
 FPS = 60
 BG_TOP = (30, 22, 66)
@@ -82,53 +82,39 @@ def draw_platform(surface, p):
             pygame.draw.line(surface, PLAT_CRACK, (cx + 3, y + 8), (cx, y + 12), 1)
 
 
-def load_model_policy(path, smoothing=1.0):
+def load_model_policy(path, smoothing=0.96875):
     '''
     Loads a network saved by tensorNetwork's saveNetwork() (a dict with 'layers':
-    list of (weights [out,in], bias [out]) tensors) and returns policy(state, env) ->
+    list of (weights [out,in], bias [out]) tensors) and returns policy(state) ->
     (steer, shoot output). Same math as tensorNetwork's Network.forwardPass: ReLU hidden
     layers, sigmoid output. Kept inline so this repo doesn't import tensorNetwork.
-    Target mode (25 inputs, 7 outputs) and steer smoothing work like in tensorNetwork's evaluateNetwork:
-    at every bounce / when its target is lost, the network's highest vote among the platform slots in the direction of travel
-    becomes its committed target; the target's relative x/y are the 2 extra inputs. smoothing < 1: applied steer += smoothing * (output - applied).
-    policy.nIn = number of inputs, policy.reset() = new game.
+    Steer smoothing like in tensorNetwork's evaluateNetwork: applied steer += smoothing * (output - applied).
+    policy.reset() = new game.
     '''
     import torch
     layers = torch.load(path, map_location="cpu", weights_only=True)["layers"]  # file holds only tensors + a float
-    nIn, nOut = layers[0][0].shape[1], layers[-1][0].shape[0]
-    targetMode = nIn == 25 and nOut == 7
-    mem = {"target": None, "applied": 0.5}
+    assert layers[0][0].shape[1] == OBSERVATION_LENGTH, f"the network has {layers[0][0].shape[1]} inputs, the game gives {OBSERVATION_LENGTH}"
+    mem = {"applied": 0.5}
 
     def reset():
-        mem["target"], mem["applied"] = None, 0.5
+        mem["applied"] = 0.5
 
-    def policy(state, env):
-        t = mem["target"]
-        x = torch.tensor(state + env.relativeTo(t) if targetMode else state).unsqueeze(0)
+    def policy(state):
+        x = torch.tensor(state).unsqueeze(0)
         for w, b in layers[:-1]:
             x = torch.relu(x @ w.T + b)
         w, b = layers[-1]
         out = torch.sigmoid(x @ w.T + b).squeeze(0).tolist()
-        if targetMode:
-            feet = env.playerY + 40
-            if env.bounced or t is None or not any(t is q for q in env.platforms) or (env.velY > 0 and t[1] < feet) or (env.velY < 0 and t[1] >= feet):
-                slots = env.slotPlatforms()
-                idx = [k for k in (range(3, 5) if env.velY < 0 else range(0, 3)) if slots[k] is not None] or [k for k in range(5) if slots[k] is not None]
-                mem["target"] = slots[max(idx, key=lambda k: out[2 + k])] if idx else None
         steer = out[0]
         if smoothing < 1.0:
             mem["applied"] += smoothing * (steer - mem["applied"])
             steer = mem["applied"]
         return steer, out[1]
-    policy.nIn = nIn
     policy.reset = reset
     return policy
 
 
-DEFAULT_SLOTS = (3, 2, 1, 2, 0, 1)    # the observation layout of the current nets (33 inputs)
-
-
-def main(modelPath=None, stable=DEFAULT_SLOTS, smoothing=0.96875, repeat=5, speed=1):
+def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
     if pygame is None:
         print("pygame not installed; demo_render.py is optional. Use env.py directly.")
         return
@@ -150,7 +136,7 @@ def main(modelPath=None, stable=DEFAULT_SLOTS, smoothing=0.96875, repeat=5, spee
     policy = load_model_policy(modelPath, smoothing) if modelPath else None
     modelName = os.path.basename(modelPath) if modelPath else None
     # human play: no stuck-rule. Network play: same rule as in training, or a bouncer would loop forever.
-    env = SprudelJumpEnv(stableSlots=stable, difficultyInput=policy.nIn == 24) if policy else SprudelJumpEnv(maxFramesWithoutProgress=None)
+    env = SprudelJumpEnv() if policy else SprudelJumpEnv(maxFramesWithoutProgress=None)
     state = env._getState()
     autoRestart = False
     best = 0
@@ -245,7 +231,7 @@ def main(modelPath=None, stable=DEFAULT_SLOTS, smoothing=0.96875, repeat=5, spee
         for _ in range(speed if policy else 1):    # --speed: several game frames per drawn picture (network play only)
             if policy:
                 if frameInRepeat == 0:
-                    steer, shootOut = policy(state, env)
+                    steer, shootOut = policy(state)
                     held = (steer, 1.0 if shootOut > 0.5 else 0.0)
                 steer, shoot = held
                 frameInRepeat = (frameInRepeat + 1) % repeat
@@ -308,9 +294,8 @@ def main(modelPath=None, stable=DEFAULT_SLOTS, smoothing=0.96875, repeat=5, spee
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Play SprudelJump yourself, or watch a trained network play.")
     parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
-    parser.add_argument("--slots", metavar="PB,PA,MB,MA[,OCC,LAND]", default="3,2,1,2,0,1", help="observation layout the model was trained with (default 3,2,1,2,0,1 = 33 inputs, the current nets)")
     parser.add_argument("--smoothing", type=float, default=0.96875, help="steer smoothing the model was trained with (default 0.96875 = action repeat 5, 1 = none)")
     parser.add_argument("--repeat", type=int, default=5, help="action repeat the model was trained with: the network decides every n-th frame and its action is held in between (smoothing is applied once per decision)")
     parser.add_argument("--speed", type=int, default=1, help="network play: game frames per drawn picture (e.g. 4 = four times as fast; sounds are muted above 1)")
     a = parser.parse_args()
-    main(a.model, tuple(int(x) for x in a.slots.split(",")), a.smoothing, a.repeat, max(1, a.speed))
+    main(a.model, a.smoothing, a.repeat, max(1, a.speed))

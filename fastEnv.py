@@ -4,21 +4,17 @@ The Python env (env.py) stays the reference: every rule here is a line-by-line p
 CPython's own Mersenne Twister (seeding, random(), uniform(), randint()), so the same seed gives the same levels and, with
 the same actions, the same scores bit for bit (see test_fastEnv.py).
 
-Supported: classic and stableSlots observations, the optional difficulty input, startHeight/zeroFraction/monsterFraction practice modes,
-target-mode bookkeeping (a committed target platform per game, kept by id).
-Not supported: seed=None (random level) - seeds must be ints in [0, 2**32).
+Observation: the fixed layout of env.py (3 platforms below, 2 above, 1 monster below, 2 above, landing prediction per platform; 33 floats).
+Practice modes: startHeight / zeroFraction / monsterFraction. Seeds must be ints in [0, 2**32).
 
 Typical use (see tensorNetwork/proSprudler.evaluateNetworkFast):
-    b = FastBatch(seeds, maxStart, minStart, zeroFraction, monsterFraction, monsterMult, stable)
-    obs = b.observe(alive, nIn)              # float64 [len(alive), nIn]
-    ...                                      # network -> actions
-    b.step(alive, steer, shoot, repeat)      # advances every game in 'alive' by 'repeat' frames
-    b.scores()                               # points beyond the start, per game
-Faster loop with the same results (one compiled call per network decision instead of observe + decide + step + filter):
-    alive, obs = b.startLoop(nIn); n = len(alive)
+    b = FastBatch(seeds, maxStart, minStart, zeroFraction, monsterFraction, monsterMult)
+    alive, obs = b.startLoop(); n = len(alive)
     while n:
         y = network(obs[:n])                 # float32 [n, nOut]
-        n = b.stepObserve(alive, n, y, applied, smooth, repeat)
+        n = b.stepObserve(alive, n, y, applied, smooth, repeat)     # one compiled call: smoothing, frames, drop finished games, next observation
+    b.scores()                               # points beyond the start, per game
+(FastBatch.run / runGroup play the whole loop with the compiled forward pass.)
 '''
 import numpy as np
 from numba import njit
@@ -33,21 +29,20 @@ from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_H
                  MAX_FALL_SPEED, HORIZONTAL_SPEED, SCROLL_THRESHOLD_Y, PLATFORM_GAP_MIN, PLATFORM_GAP_MAX, DIFFICULTY_MAX_HEIGHT,
                  PLATFORM_GAP_MIN_HARD, PLATFORM_GAP_MAX_HARD, PLATFORM_WIDTH_MIN, BREAKABLE_CHANCE_BASE, BREAKABLE_CHANCE_MAX,
                  MONSTER_WIDTH, MONSTER_HEIGHT, MONSTER_SPAWN_CHANCE_BASE, MONSTER_SPAWN_CHANCE_MAX, MONSTER_SPAWN_CHANCE_CAP,
-                 MONSTER_KILL_BONUS, BULLET_WIDTH, BULLET_HEIGHT, BULLET_SPEED, BULLET_COOLDOWN_FRAMES, PROGRESS_MARGIN)
+                 MONSTER_KILL_BONUS, BULLET_WIDTH, BULLET_HEIGHT, BULLET_SPEED, BULLET_COOLDOWN_FRAMES, PROGRESS_MARGIN,
+                 PLATFORMS_BELOW, PLATFORMS_ABOVE, MONSTERS_BELOW, MONSTERS_ABOVE, OBSERVATION_LENGTH)
 
 LAND_TMAX, LAND_TOLERANCE = 100, 40.0    # landingInfo, see env.py
 MAXP, MAXM, MAXB = 48, 48, 24          # array capacities per game (a screen holds ~12 platforms, ~7 bullets)
 # float state columns F[g, :]
-PX, PY, VY, TOTAL, OFFSET, BEST, MMULT = 0, 1, 2, 3, 4, 5, 6
-# 'ghost' of a removed target platform (the Python env keeps feeding the frozen last position of the platform object for one frame)
-GHOST_FLAG, GHOST_X, GHOST_Y, GHOST_W = 8, 9, 10, 11
-TOPY = 7    # y of the topmost platform after the last frame (column 7 was unused)
+PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY: y of the topmost platform after the last frame
 # behaviour counters (they only read the game, never change it): bullets fired, bullets fired while no monster was visible on screen, sum of the
-# absolute change of the applied steer between two decisions, the applied steer of the last decision (starts at 0.5 = straight)
-SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS = 12, 13, 14, 15, 16    # DECISIONS: network decisions the game lived through
+# absolute change of the applied steer between two decisions, the applied steer of the last decision (starts at 0.5 = straight),
+# network decisions the game lived through
+SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS = 8, 9, 10, 11, 12
 # int state columns I[g, :]
-COOL, FWP, NP, NM, NB, DONE, BOUNCED, NEXTID, TARGET, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
-# platform columns: x, y, width, breakable, id
+COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
+# platform columns: x, y, width, breakable
 MASK32 = 0xFFFFFFFF
 
 
@@ -146,8 +141,6 @@ def addPlatform(PL, I, g, x, y, w, breakable):
     PL[g, n, 1] = y
     PL[g, n, 2] = w
     PL[g, n, 3] = breakable
-    PL[g, n, 4] = I[g, NEXTID]
-    I[g, NEXTID] += 1
     I[g, NP] = n + 1
 
 
@@ -207,9 +200,6 @@ def resetGame(F, I, PL, MO, MT, g, seed, maxStart, minStart, zeroFraction, monst
     I[g, NB] = 0
     I[g, DONE] = 0
     I[g, BOUNCED] = 0
-    I[g, NEXTID] = 0
-    I[g, TARGET] = -1
-    F[g, GHOST_FLAG] = 0.0
     t = min(1.0, F[g, TOTAL] / DIFFICULTY_MAX_HEIGHT)
     gapMin = PLATFORM_GAP_MIN + t * (PLATFORM_GAP_MIN_HARD - PLATFORM_GAP_MIN)
     gapMax = PLATFORM_GAP_MAX + t * (PLATFORM_GAP_MAX_HARD - PLATFORM_GAP_MAX)
@@ -266,14 +256,9 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                 I[g, BOUNCED] = 1
                 if PL[g, i, 3] > 0.5:
                     drop = True
-                    if PL[g, i, 4] == I[g, TARGET]:
-                        F[g, GHOST_FLAG] = 1.0
-                        F[g, GHOST_X] = PL[g, i, 0]
-                        F[g, GHOST_Y] = PL[g, i, 1]
-                        F[g, GHOST_W] = PL[g, i, 2]
             if not drop:
                 if k != i:
-                    for c in range(5):
+                    for c in range(4):
                         PL[g, k, c] = PL[g, i, c]
                 k += 1
         removed = k != nP    # a breakable platform broke: the topmost platform may have changed
@@ -390,16 +375,10 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                     PL[g, k, 0] = PL[g, i, 0]
                     PL[g, k, 2] = PL[g, i, 2]
                     PL[g, k, 3] = PL[g, i, 3]
-                    PL[g, k, 4] = PL[g, i, 4]
                 PL[g, k, 1] = y
                 if y < minY:
                     minY = y
                 k += 1
-            elif PL[g, i, 4] == I[g, TARGET]:
-                F[g, GHOST_FLAG] = 1.0
-                F[g, GHOST_X] = PL[g, i, 0]
-                F[g, GHOST_Y] = y
-                F[g, GHOST_W] = PL[g, i, 2]
         nP = k
     elif removed:
         minY = np.inf
@@ -483,22 +462,10 @@ def clampRel(feet, y):
 
 
 @njit(cache=True)
-def pickNearest(Y, n, key, used, below):
-    '''Index of the entry with the smallest key (first one on ties) among not-yet-used entries; below: 1 = only y >= feet, 2 = only y < feet, 0 = all.
-    key is computed by the caller; returns -1 if there is none. (A tiny selection sort replaces Python's stable sorted().)'''
-    best = -1
-    for i in range(n):
-        if used[i]:
-            continue
-        if best < 0 or key[i] < key[best]:
-            best = i
-    return best
-
-
-@njit(cache=True)
-def slotIds(F, I, PL, g, out, pb, pa):
-    '''Platform indices (into PL[g]) of the stableSlots: the pb nearest below the feet (smallest y >= feet first), then the pa nearest above (largest y < feet first); -1 = none.
+def slotIds(F, I, PL, g, out):
+    '''Platform indices (into PL[g]) of the observation slots: the PLATFORMS_BELOW nearest below the feet (smallest y >= feet first), then the PLATFORMS_ABOVE nearest above (largest y < feet first); -1 = none.
     One pass over the platforms, each inserted into two small sorted lists; on equal y the lower index stays first (= the order of repeated "pick the nearest unused" scans).'''
+    pb, pa = PLATFORMS_BELOW, PLATFORMS_ABOVE
     feet = F[g, PY] + PLAYER_HEIGHT
     nP = I[g, NP]
     for s in range(pb + pa):
@@ -534,8 +501,9 @@ def slotIds(F, I, PL, g, out, pb, pa):
 
 
 @njit(cache=True)
-def monsterIds(F, I, MO, g, out, mb, ma):
-    '''Same for monsters: the mb nearest below the feet, then the ma nearest above; -1 = none.'''
+def monsterIds(F, I, MO, g, out):
+    '''Same for monsters: the MONSTERS_BELOW nearest below the feet, then the MONSTERS_ABOVE nearest above; -1 = none.'''
+    mb, ma = MONSTERS_BELOW, MONSTERS_ABOVE
     feet = F[g, PY] + PLAYER_HEIGHT
     nM = I[g, NM]
     for s in range(mb + ma):
@@ -683,197 +651,82 @@ def landFramesPath(vy, rel, t0, K, A, Z):
 
 
 @njit(cache=True)
-def slotExtras(F, I, PL, MO, g, row, c, i, feet, occupied, landing, t0, K, A, Z):
-    '''Optional per-platform features of platform index i (-1 = empty slot): occupied flag, landing prediction [T, r]. Returns the new column.
-    t0, K: this frame's landPath (only used with landing).'''
+def landingFeatures(F, PL, g, row, c, i, feet, t0, K, A, Z):
+    '''Landing prediction [T, r] of platform index i (-1 = empty slot), written to row[c], row[c + 1]. t0, K, A, Z: this frame's landPath.'''
     if i < 0:
-        if occupied:
-            row[c] = 0.0
-            c += 1
-        if landing:
-            row[c] = 1.0
-            row[c + 1] = 1.0
-            c += 2
-        return c
-    if occupied:
-        busy = 0.0
-        for m in range(I[g, NM]):
-            if abs(MO[g, m, 0] + MONSTER_WIDTH / 2 - (PL[g, i, 0] + PL[g, i, 2] / 2)) < 0.5 and abs(MO[g, m, 1] + MONSTER_HEIGHT - PL[g, i, 1]) < 0.5:
-                busy = 1.0
-                break
-        row[c] = busy
-        c += 1
-    if landing:
-        frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K, A, Z)
-        if frames == 0:
-            row[c] = 1.0
-            row[c + 1] = 1.0
-        else:
-            dx = PL[g, i, 0] + PL[g, i, 2] / 2 - (F[g, PX] + PLAYER_WIDTH / 2)
-            if dx > HALF_WIDTH:
-                dx -= SCREEN_WIDTH
-            elif dx < -HALF_WIDTH:
-                dx += SCREEN_WIDTH
-            need = abs(dx) - LAND_TOLERANCE
-            if need < 0.0:
-                need = 0.0
-            r = need / (HORIZONTAL_SPEED * frames)
-            row[c] = frames / LAND_TMAX
-            row[c + 1] = (2.0 if r > 2.0 else r) / 2.0
-        c += 2
-    return c
+        row[c] = 1.0
+        row[c + 1] = 1.0
+        return
+    frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K, A, Z)
+    if frames == 0:
+        row[c] = 1.0
+        row[c + 1] = 1.0
+    else:
+        dx = PL[g, i, 0] + PL[g, i, 2] / 2 - (F[g, PX] + PLAYER_WIDTH / 2)
+        if dx > HALF_WIDTH:
+            dx -= SCREEN_WIDTH
+        elif dx < -HALF_WIDTH:
+            dx += SCREEN_WIDTH
+        need = abs(dx) - LAND_TOLERANCE
+        if need < 0.0:
+            need = 0.0
+        r = need / (HORIZONTAL_SPEED * frames)
+        row[c] = frames / LAND_TMAX
+        row[c + 1] = (2.0 if r > 2.0 else r) / 2.0
 
 
 @njit(cache=True)
-def observeGame(F, I, PL, MO, g, row, stable, difficulty, pb, pa, mb, ma, occupied, landing, ids, mids):
-    '''Writes the 23 (or 24 with difficulty; with stable slots 2 + 3 * (pb + pa) + 2 * (mb + ma) + difficulty) state floats of game g into row; returns the number written.'''
+def observeGame(F, I, PL, MO, g, row, ids, mids):
+    '''Writes the OBSERVATION_LENGTH (33) state floats of game g into row (layout: see env.py _getState).'''
     feet = F[g, PY] + PLAYER_HEIGHT
     vy = F[g, VY] / MAX_FALL_SPEED
     row[0] = F[g, PX] / SCREEN_WIDTH
     row[1] = -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)
-    nP = I[g, NP]
-    nM = I[g, NM]
     c = 2
-    if stable:
-        slotIds(F, I, PL, g, ids, pb, pa)
-        for s in range(pb + pa):
-            i = ids[s]
-            if i < 0:
-                row[c] = 0.0
-                row[c + 1] = -1.0 if s < pb else 1.0
-                row[c + 2] = 0.0
-            else:
-                row[c] = relXY(F, g, PL[g, i, 0], PL[g, i, 2])
-                row[c + 1] = clampRel(feet, PL[g, i, 1])
-                row[c + 2] = 1.0 if PL[g, i, 3] > 0.5 else 0.0
-            c += 3
-        monsterIds(F, I, MO, g, mids, mb, ma)
-        for s in range(mb + ma):
-            i = mids[s]
-            if i < 0:
-                row[c] = 0.0
-                row[c + 1] = -1.0 if s < mb else 1.0
-            else:
-                row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
-                row[c + 1] = clampRel(feet, MO[g, i, 1])
-            c += 2
-        if occupied or landing:
-            t0, K, A, Z = landPath(F[g, VY]) if landing else (0, 0, 0.0, 0.0)
-            for s2 in range(pb + pa):
-                c = slotExtras(F, I, PL, MO, g, row, c, ids[s2], feet, occupied, landing, t0, K, A, Z)
-    else:
-        used = np.zeros(nP, dtype=np.bool_)
-        key = np.empty(nP, dtype=np.float64)
-        for i in range(nP):
-            key[i] = abs(feet - PL[g, i, 1])
-        for s in range(5):
-            i = pickNearest(key, nP, key, used, 0)
-            if i < 0:
-                row[c] = 0.0
-                row[c + 1] = -1.0
-                row[c + 2] = 0.0
-            else:
-                used[i] = True
-                row[c] = relXY(F, g, PL[g, i, 0], PL[g, i, 2])
-                row[c + 1] = clampRel(feet, PL[g, i, 1])
-                row[c + 2] = 1.0 if PL[g, i, 3] > 0.5 else 0.0
-            c += 3
-        usedM = np.zeros(nM, dtype=np.bool_)
-        keyM = np.empty(nM, dtype=np.float64)
-        for i in range(nM):
-            keyM[i] = abs(feet - MO[g, i, 1])
-        for s in range(3):
-            i = pickNearest(keyM, nM, keyM, usedM, 0)
-            if i < 0:
-                row[c] = 0.0
-                row[c + 1] = -1.0
-            else:
-                usedM[i] = True
-                row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
-                row[c + 1] = clampRel(feet, MO[g, i, 1])
-            c += 2
-    if difficulty:
-        t = F[g, TOTAL] / DIFFICULTY_MAX_HEIGHT
-        row[c] = 1.0 if t > 1.0 else t
-        c += 1
-    return c
+    slotIds(F, I, PL, g, ids)
+    for s in range(PLATFORMS_BELOW + PLATFORMS_ABOVE):
+        i = ids[s]
+        if i < 0:
+            row[c] = 0.0
+            row[c + 1] = -1.0 if s < PLATFORMS_BELOW else 1.0
+            row[c + 2] = 0.0
+        else:
+            row[c] = relXY(F, g, PL[g, i, 0], PL[g, i, 2])
+            row[c + 1] = clampRel(feet, PL[g, i, 1])
+            row[c + 2] = 1.0 if PL[g, i, 3] > 0.5 else 0.0
+        c += 3
+    monsterIds(F, I, MO, g, mids)
+    for s in range(MONSTERS_BELOW + MONSTERS_ABOVE):
+        i = mids[s]
+        if i < 0:
+            row[c] = 0.0
+            row[c + 1] = -1.0 if s < MONSTERS_BELOW else 1.0
+        else:
+            row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
+            row[c + 1] = clampRel(feet, MO[g, i, 1])
+        c += 2
+    t0, K, A, Z = landPath(F[g, VY])
+    for s in range(PLATFORMS_BELOW + PLATFORMS_ABOVE):
+        landingFeatures(F, PL, g, row, c, ids[s], feet, t0, K, A, Z)
+        c += 2
 
 
 @njit(cache=True)
-def findPlatform(I, PL, g, pid):
-    for i in range(I[g, NP]):
-        if PL[g, i, 4] == pid:
-            return i
-    return -1
-
-
-@njit(cache=True)
-def observeMany(F, I, PL, MO, alive, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
-    '''Fills out[a] with the observation of game alive[a]. In target mode (out has 25 columns) the last two are the committed
-    target's relative x / signed relative y ([0, -1] without a target).'''
-    ids = np.empty(max(pb + pa, 1), dtype=np.int64)
-    mids = np.empty(max(mb + ma, 1), dtype=np.int64)
+def observeMany(F, I, PL, MO, alive, out):
+    '''Fills out[a] with the observation of game alive[a].'''
+    ids = np.empty(PLATFORMS_BELOW + PLATFORMS_ABOVE, dtype=np.int64)
+    mids = np.empty(MONSTERS_BELOW + MONSTERS_ABOVE, dtype=np.int64)
     for a in range(len(alive)):
-        g = alive[a]
-        c = observeGame(F, I, PL, MO, g, out[a], stable, difficulty, pb, pa, mb, ma, occupied, landing, ids, mids)
-        if targetMode:
-            i = findPlatform(I, PL, g, I[g, TARGET]) if I[g, TARGET] >= 0 else -1
-            if i >= 0:
-                out[a, c] = relXY(F, g, PL[g, i, 0], PL[g, i, 2])
-                out[a, c + 1] = clampRel(F[g, PY] + PLAYER_HEIGHT, PL[g, i, 1])
-            elif F[g, GHOST_FLAG] > 0.5 and I[g, TARGET] >= 0:
-                out[a, c] = relXY(F, g, F[g, GHOST_X], F[g, GHOST_W])
-                out[a, c + 1] = clampRel(F[g, PY] + PLAYER_HEIGHT, F[g, GHOST_Y])
-            else:
-                out[a, c] = 0.0
-                out[a, c + 1] = -1.0
+        observeGame(F, I, PL, MO, alive[a], out[a], ids, mids)
 
 
 @njit(cache=True)
-def decideTargets(F, I, PL, alive, votes):
-    '''Target mode: for every game that needs a new target (it just bounced, it has none, it is gone, or it was passed) the platform slot
-    with the highest vote among the platforms in the direction of travel (rising: the 2 above, falling: the 3 below; any existing slot if none
-    there) becomes the committed target. votes[a, k] = vote of the network for slot k.'''
-    ids = np.empty(5, dtype=np.int64)
-    for a in range(len(alive)):
-        g = alive[a]
-        feet = F[g, PY] + PLAYER_HEIGHT
-        t = I[g, TARGET]
-        i = findPlatform(I, PL, g, t) if t >= 0 else -1
-        need = I[g, BOUNCED] == 1 or t < 0 or i < 0
-        if not need:
-            ty = PL[g, i, 1]
-            need = (F[g, VY] > 0 and ty < feet) or (F[g, VY] < 0 and ty >= feet)
-        if not need:
-            continue
-        F[g, GHOST_FLAG] = 0.0
-        slotIds(F, I, PL, g, ids, 3, 2)
-        lo = 3 if F[g, VY] < 0 else 0
-        hi = 5 if F[g, VY] < 0 else 3
-        best = -1
-        for k in range(lo, hi):
-            if ids[k] >= 0 and (best < 0 or votes[a, k] > votes[a, best]):
-                best = k
-        if best < 0:
-            for k in range(5):
-                if ids[k] >= 0 and (best < 0 or votes[a, k] > votes[a, best]):
-                    best = k
-        I[g, TARGET] = PL[g, ids[best], 4] if best >= 0 else -1
-
-
-@njit(cache=True)
-def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, decide, fromExp, out,
-                    stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
-    '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n), or exp(-logit) with fromExp (see forwardNegated). decide (target mode): the votes
-    y[:, 2:7] pick targets. Steer smoothing (smooth < 1: applied[g] += smooth * (steer - applied[g])), 'repeat' frames, then the finished games are
-    dropped from alive[:n] (order kept) and the observation of the remaining ones is written to out[:k] as float32. Returns k.
-    Same arithmetic as observe -> astype(float32) -> decide -> smoothing -> step -> filter, so the scores stay bit-identical.'''
-    if decide:
-        votes = np.empty((n, 5))
-        for a in range(n):
-            for j in range(5):
-                votes[a, j] = np.float64(unit(y[a, 2 + j], fromExp))
-        decideTargets(F, I, PL, alive[:n], votes)
+def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, maxNoProgress, fromExp, out):
+    '''Everything between two forward passes in one call: y[a] = network output of game alive[a] (a < n), or exp(-logit) with fromExp (see forwardNegated).
+    Steer smoothing (smooth < 1: applied[g] += smooth * (steer - applied[g])), 'repeat' frames, then the finished games are
+    dropped from alive[:n] (order kept) and the observation of the remaining ones is written to out[:k] as float32 (computed in float64 and rounded on
+    the store, every column written for every game). Returns k.
+    Same arithmetic as observe -> astype(float32) -> smoothing -> step -> filter, so the scores stay bit-identical.'''
     k = 0
     for a in range(n):
         g = alive[a]
@@ -893,15 +746,14 @@ def stepObserveMany(F, I, PL, MO, BU, MT, alive, n, y, applied, smooth, repeat, 
         if I[g, DONE] == 0:
             alive[k] = g
             k += 1
-    observeFloat32(F, I, PL, MO, alive, k, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
+    observeFloat32(F, I, PL, MO, alive, k, out)
     return k
 
 
 @njit(cache=True)
-def observeFloat32(F, I, PL, MO, alive, n, out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing):
-    '''observeMany for alive[:n] straight into the float32 array out[:n]. The observation is computed in float64 and rounded on the store, the same
-    rounding as np.float32(x) of the float64 value; every column is written for every game, so no zeroing is needed.'''
-    observeMany(F, I, PL, MO, alive[:n], out, stable, difficulty, targetMode, pb, pa, mb, ma, occupied, landing)
+def observeFloat32(F, I, PL, MO, alive, n, out):
+    '''observeMany for alive[:n] straight into the float32 array out[:n].'''
+    observeMany(F, I, PL, MO, alive[:n], out)
 
 
 @njit(cache=True)
@@ -962,23 +814,14 @@ def unit(e, fromExp):
 class FastBatch:
     '''G games (one per seed) held in arrays, played in lockstep by the compiled functions above.'''
 
-    def __init__(self, seeds, maxStartHeight=None, minStartHeight=0, zeroFraction=0.0, monsterFraction=0.0, monsterMult=1.0,
-                 stable=False, difficulty=False, maxFramesWithoutProgress=600):
+    def __init__(self, seeds, maxStartHeight=None, minStartHeight=0, zeroFraction=0.0, monsterFraction=0.0, monsterMult=1.0, maxFramesWithoutProgress=600):
         G = len(seeds)
         self.G = G
-        # stable: False = classic, True = the 3/2/1/2 layout, or a tuple (platformsBelow, platformsAbove, monstersBelow, monstersAbove)
-        self.layout = (3, 2, 1, 2) if stable is True else (tuple(stable) if stable else (3, 2, 1, 2))
-        self.stable, self.difficulty = bool(stable), difficulty
-        self.customLayout = bool(stable) and self.layout != (3, 2, 1, 2)    # 4 or 6 entries (the last two switch the optional extra features on)
-        self.occupied = self.stable and len(self.layout) > 4 and bool(self.layout[4])
-        self.landing = self.stable and len(self.layout) > 5 and bool(self.layout[5])
-        self.obsLength = (2 + 3 * (self.layout[0] + self.layout[1]) + 2 * (self.layout[2] + self.layout[3])
-                          + (self.layout[0] + self.layout[1]) * ((1 if self.occupied else 0) + (2 if self.landing else 0))) if self.stable else 23
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 17))
+        self.F = np.zeros((G, 13))
         self.F[:, LAST_STEER] = 0.5
-        self.I = np.zeros((G, 10), dtype=np.int64)
-        self.PL = np.zeros((G, MAXP, 5))
+        self.I = np.zeros((G, 8), dtype=np.int64)
+        self.PL = np.zeros((G, MAXP, 4))
         self.MO = np.zeros((G, MAXM, 2))
         self.BU = np.zeros((G, MAXB, 2))
         self.MT = np.zeros((G, 625), dtype=np.int64)
@@ -987,71 +830,59 @@ class FastBatch:
         resetAll(self.F, self.I, self.PL, self.MO, self.MT, seeds, -1 if maxStartHeight is None else int(maxStartHeight), int(minStartHeight),
                  float(zeroFraction), float(monsterFraction), float(monsterMult))
 
-    def observeMode(self, nIn):
-        '''(stable, difficulty, targetMode, platformsBelow, platformsAbove, monstersBelow, monstersAbove, occupied, landing) for observeMany.'''
-        if self.customLayout:    # other slot counts: nIn is just obsLength (+1 with the difficulty input); no target mode
-            assert nIn == self.obsLength + (1 if self.difficulty else 0), f"network has {nIn} inputs, layout {self.layout} gives {self.obsLength}"
-            return (True, self.difficulty, False, *self.layout[:4], self.occupied, self.landing)
-        return (self.stable, nIn == 24 or self.difficulty, nIn == 25, *self.layout[:4], self.occupied, self.landing)
-
-    def observe(self, alive, nIn):
-        '''alive: int64 array of game indices. nIn: 23, 24 (difficulty) or 25 (target mode). Returns float64 [len(alive), nIn].'''
-        out = np.zeros((len(alive), nIn))
-        observeMany(self.F, self.I, self.PL, self.MO, alive, out, *self.observeMode(nIn))
+    def observe(self, alive):
+        '''alive: int64 array of game indices. Returns float64 [len(alive), OBSERVATION_LENGTH].'''
+        out = np.zeros((len(alive), OBSERVATION_LENGTH))
+        observeMany(self.F, self.I, self.PL, self.MO, alive, out)
         return out
 
-    def startLoop(self, nIn):
-        '''Start of the fused loop (see stepObserve): returns (alive, obs). alive = int64 [G] game indices, obs = float32 [G, nIn],
+    def startLoop(self):
+        '''Start of the fused loop (see stepObserve): returns (alive, obs). alive = int64 [G] game indices, obs = float32 [G, OBSERVATION_LENGTH],
         row a = observation of game alive[a]; only the first n rows are valid, n = the number stepObserve returned last (G at the start).'''
-        self.loopMode = self.observeMode(nIn)
-        self.obs = np.zeros((self.G, nIn), dtype=np.float32)
+        self.obs = np.zeros((self.G, OBSERVATION_LENGTH), dtype=np.float32)
         alive = np.arange(self.G, dtype=np.int64)
-        observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs, *self.loopMode)
+        observeFloat32(self.F, self.I, self.PL, self.MO, alive, self.G, self.obs)
         return alive, self.obs
 
-    def stepObserve(self, alive, n, y, applied, smooth, repeat=1, decide=False, fromExp=False):
-        '''One call instead of decide + step + done-filter + observe: y = network output [n, nOut] for the games alive[:n].
+    def stepObserve(self, alive, n, y, applied, smooth, repeat=1, fromExp=False):
+        '''One call instead of step + done-filter + observe: y = network output [n, nOut] for the games alive[:n].
         applied = float64 [G] smoothed steer per game (changed in place; smooth >= 1 = no smoothing). Drops the finished games from
-        alive[:n] in place, writes the next observations to obs[:k] (the array startLoop returned) and returns k.
-        decide: target mode, outputs 2..6 are the slot votes (as decide()).'''
+        alive[:n] in place, writes the next observations to obs[:k] (the array startLoop returned) and returns k.'''
         return stepObserveMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, n, np.ascontiguousarray(y, dtype=np.float32), applied,
-                               float(smooth), repeat, self.maxNoProgress, bool(decide), bool(fromExp), self.obs, *self.loopMode)
+                               float(smooth), repeat, self.maxNoProgress, bool(fromExp), self.obs)
 
-    def run(self, alive, n, wTs, bs, applied, smooth, repeat, decide, frames, stop):
+    def run(self, alive, n, wTs, bs, applied, smooth, repeat, frames, stop):
         '''The evaluation loop (forward -> step -> observe) until n == 0 or frames >= stop; returns (n, frames). Same results as
         `x = sigmoid(forwardLogits(...)); n = stepObserve(...)` per decision, with the per-decision Python work cut down: the sigmoid is
         split into forwardNegated + np.exp (in place, numpy's own float32 exp) + the finish inside stepObserveMany, and numpy's overflow
         handling is switched once for the whole call. wTs / bs: tuples of transposed float32 weights and float32 biases (see forwardLogits).'''
-        obs, mode = self.obs, self.loopMode
+        obs = self.obs
         F, I, PL, MO, BU, MT, maxNoProgress = self.F, self.I, self.PL, self.MO, self.BU, self.MT, self.maxNoProgress
-        smooth, decide = float(smooth), bool(decide)
+        smooth = float(smooth)
         with np.errstate(over="ignore"):
             while n and frames < stop:
                 e = forwardNegated(obs[:n], wTs, bs)
                 np.exp(e, out=e)
-                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, decide, True, obs, *mode)
+                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, True, obs)
                 frames += repeat
         return n, frames
 
-    def runGroup(self, alive, n, wsStack, bsStack, S, applied, smooth, repeat, decide, frames, stop):
+    def runGroup(self, alive, n, wsStack, bsStack, S, applied, smooth, repeat, frames, stop):
         '''run() for a batch made of k = G / S children that play the same S seeds one after another in the seed list (seeds * k): wsStack / bsStack
         are tuples of the layers' weights [k, in, out] and biases [k, out] of the k networks (float32, C order). One np.exp, one stepObserveMany
         and one loop iteration serve all k children per decision; the matmuls stay one set per child (forwardGroupNegated).'''
-        obs, mode = self.obs, self.loopMode
+        obs = self.obs
         F, I, PL, MO, BU, MT, maxNoProgress = self.F, self.I, self.PL, self.MO, self.BU, self.MT, self.maxNoProgress
-        smooth, decide = float(smooth), bool(decide)
+        smooth = float(smooth)
         out = np.empty((self.G, wsStack[-1].shape[2]), dtype=np.float32)
         with np.errstate(over="ignore"):
             while n and frames < stop:
                 forwardGroupNegated(obs, alive, n, S, wsStack, bsStack, out)
                 e = out[:n]
                 np.exp(e, out=e)
-                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, decide, True, obs, *mode)
+                n = stepObserveMany(F, I, PL, MO, BU, MT, alive, n, e, applied, smooth, repeat, maxNoProgress, True, obs)
                 frames += repeat
         return n, frames
-
-    def decide(self, alive, votes):
-        decideTargets(self.F, self.I, self.PL, alive, np.ascontiguousarray(votes, dtype=np.float64))
 
     def step(self, alive, steer, shoot, repeat=1):
         stepMany(self.F, self.I, self.PL, self.MO, self.BU, self.MT, alive, np.ascontiguousarray(steer, dtype=np.float64),

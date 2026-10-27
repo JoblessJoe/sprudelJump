@@ -56,8 +56,8 @@ def compile_variant(name, stepSrc, manySrc):
 def frozenStates(net, decisions=(300, 1200, 2500, 4000), games=200):
     wTs, bs = net
     seeds = [int(s) for s in np.random.RandomState(7).randint(0, 2 ** 31, games)]
-    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0, stable=bf.LAYOUT)
-    alive, obs = b.startLoop(bf.N_IN)
+    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0)
+    alive, obs = b.startLoop()
     n = len(alive)
     applied = np.full(games, 0.5)
     states = []
@@ -67,7 +67,7 @@ def frozenStates(net, decisions=(300, 1200, 2500, 4000), games=200):
             states.append(([a.copy() for a in (b.F, b.I, b.PL, b.MO, b.BU, b.MT)], alive[:n].copy(), x[:, 0].astype(np.float64), x[:, 1].astype(np.float64)))
         if not n:
             break
-        n = b.stepObserve(alive, n, bf.forward(fe, obs[:n], wTs, bs), applied, bf.SMOOTH, REPEAT, decide=False)
+        n = b.stepObserve(alive, n, bf.forward(fe, obs[:n], wTs, bs), applied, bf.SMOOTH, REPEAT)
     return states, b
 
 

@@ -10,20 +10,11 @@ from env import SprudelJumpEnv
 from fastEnv import FastBatch
 
 CONFIGS = [
-    dict(stable=False, maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
-    dict(stable=True, maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
-    dict(stable=True, maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
-    dict(stable=False, maxStart=30000, minStart=0, zero=0.0, mf=0.0, mm=1.0),
-    dict(stable=True, maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
-    dict(stable=(4, 3, 1, 2), maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
-    dict(stable=(6, 4, 1, 2), maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
-    dict(stable=(3, 2, 2, 3), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
-    dict(stable=(3, 2, 1, 2, 1, 0), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # occupied flag
-    dict(stable=(3, 2, 1, 2, 0, 1), maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),       # landing prediction
-    dict(stable=(4, 3, 1, 2, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, other slot counts
-    dict(stable=(1, 1, 4, 4, 1, 1), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),  # both, extreme counts (many empty slots)
-    dict(stable=(1, 1, 4, 4), maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),   # extreme counts: many missing-slot paddings
-    dict(stable=(3, 2, 1, 2, 0, 1), maxStart=None, minStart=0, zero=0.0, mf=1.0, mm=4.0),     # monster-heavy levels (bullets vs monsters at the top edge)
+    dict(maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0),
+    dict(maxStart=30000, minStart=20000, zero=0.5, mf=0.0, mm=1.0),
+    dict(maxStart=30000, minStart=0, zero=0.0, mf=0.0, mm=1.0),
+    dict(maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
+    dict(maxStart=None, minStart=0, zero=0.0, mf=1.0, mm=4.0),    # monster-heavy levels (bullets vs monsters at the top edge)
 ]
 POLICIES = {
     "random": lambda rng, f: [rng.random(), 1.0 if rng.random() > 0.5 else 0.0],
@@ -34,9 +25,9 @@ POLICIES = {
 
 def compare(cfg, seeds, frames, policy):
     '''Plays the games in both envs with identical actions; asserts equal observations, scores and game-over flags every frame.'''
-    envs = [SprudelJumpEnv(stableSlots=cfg["stable"]) for _ in seeds]
+    envs = [SprudelJumpEnv() for _ in seeds]
     states = {g: e.reset(cfg["maxStart"], s, cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"]) for g, (e, s) in enumerate(zip(envs, seeds))}
-    b = FastBatch(seeds, cfg["maxStart"], cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"], stable=cfg["stable"])
+    b = FastBatch(seeds, cfg["maxStart"], cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"])
     alive = list(range(len(seeds)))
     rng = random.Random(1)
     checked = 0
@@ -44,7 +35,7 @@ def compare(cfg, seeds, frames, policy):
         if not alive:
             break
         idx = np.array(alive, dtype=np.int64)
-        obs = b.observe(idx, len(states[alive[0]]))
+        obs = b.observe(idx)
         for row, g in zip(obs, alive):
             assert np.array_equal(row, np.array(states[g])), f"observation differs: game {g} frame {f}\n{row}\n{np.array(states[g])}"
         acts = [policy(rng, f) for _ in alive]
@@ -66,5 +57,5 @@ if __name__ == "__main__":
         for name, pol in POLICIES.items():
             seeds = [random.Random(ci).randrange(2**32) for _ in range(40)] + [0, 1, 2, 2**32 - 1]
             n = compare(cfg, seeds, 4000, pol)
-            print(f"config {ci} stable={cfg['stable']} policy {name}: {n:,} game-frames identical")
+            print(f"config {ci} policy {name}: {n:,} game-frames identical")
     print("ALL IDENTICAL")

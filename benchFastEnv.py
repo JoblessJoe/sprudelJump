@@ -19,7 +19,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 NET = os.path.join(HERE, "bench", "net_repeat5_36k.npz")
-LAYOUT, REPEAT, SMOOTH, N_IN = (3, 2, 1, 2, 0, 1), 5, 1 - 0.5 ** 5, 33
+REPEAT, SMOOTH, N_IN = 5, 1 - 0.5 ** 5, 33
 GAMES = 200
 pc = time.perf_counter
 
@@ -54,15 +54,15 @@ def forward(fe, x, wTs, bs):
 def play(fe, net, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=100_000, timed=False):
     '''One full evaluation. Returns (scores, seconds, forwardSeconds, decisions).'''
     wTs, bs = net
-    b = fe.FastBatch(seeds, maxStart, minStart, zero, 0.0, 1.0, stable=LAYOUT)
-    alive, obs = b.startLoop(N_IN)
+    b = fe.FastBatch(seeds, maxStart, minStart, zero, 0.0, 1.0)
+    alive, obs = b.startLoop()
     n = len(alive)
     applied = np.full(len(seeds), 0.5)
     frames = decisions = 0
     tFwd = 0.0
     t0 = pc()
     if hasattr(b, "run") and not timed:    # the current evaluation loop (see FastBatch.run); the old fastEnv has only the loop below
-        n, frames = b.run(alive, n, wTs, bs, applied, SMOOTH, REPEAT, False, 0, maxFrames)
+        n, frames = b.run(alive, n, wTs, bs, applied, SMOOTH, REPEAT, 0, maxFrames)
         return b.scores().copy(), pc() - t0, tFwd, frames // REPEAT
     while n and frames < maxFrames:
         if timed:
@@ -70,7 +70,7 @@ def play(fe, net, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=100_000,
         x = forward(fe, obs[:n], wTs, bs)
         if timed:
             tFwd += pc() - t1
-        n = b.stepObserve(alive, n, x, applied, SMOOTH, REPEAT, decide=False)
+        n = b.stepObserve(alive, n, x, applied, SMOOTH, REPEAT)
         frames += REPEAT
         decisions += 1
     return b.scores().copy(), pc() - t0, tFwd, decisions
@@ -90,7 +90,7 @@ def header():
     print(f"machine: {platform.processor() or platform.machine()}, python {platform.python_version()}, numpy {np.__version__}")
     import numba
     print(f"numba {numba.__version__}, single-threaded BLAS ({os.environ['OPENBLAS_NUM_THREADS']}), {GAMES} games per evaluation, "
-          f"repeat {REPEAT}, landing layout {LAYOUT}\n")
+          f"repeat {REPEAT}\n")
 
 
 def profile(fe, net, rounds):
@@ -105,14 +105,14 @@ def profile(fe, net, rounds):
               f"{t / max(1, sc.size) * 1e3:6.1f} ms per game")
     # frozen mid-game state: play DECISIONS decisions, then time the parts in isolation on copies of that state
     decisions = 2500
-    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0, stable=LAYOUT)
-    alive, obs = b.startLoop(N_IN)
+    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0)
+    alive, obs = b.startLoop()
     n = len(alive)
     applied = np.full(GAMES, 0.5)
     for _ in range(decisions):
         if not n:
             break
-        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT, decide=False)
+        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT)
     print(f"\nparts on a frozen state after {decisions} decisions ({decisions * REPEAT:,} frames), {n} of {GAMES} games still alive:")
     arrays = (b.F, b.I, b.PL, b.MO, b.BU, b.MT)
     saved = [a.copy() for a in arrays]
@@ -135,9 +135,9 @@ def profile(fe, net, rounds):
         return (pc() - t) / reps
 
     physics = lambda: fe.stepMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), steer, shoot, REPEAT, b.maxNoProgress)
-    observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32, *b.loopMode)
+    observe = lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32)
     fused = lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), n, x, np.full(GAMES, 0.5), SMOOTH, REPEAT, b.maxNoProgress,
-                                       False, False, out32, *b.loopMode)
+                                       False, out32)
     fwd = lambda: forward(fe, obs[:n], wTs, bs)
     base = timeit(restore, withRestore=False)
     tPhys = timeit(physics, withRestore=True) - base
@@ -150,14 +150,7 @@ def profile(fe, net, rounds):
                     ("network forward + sigmoid", tFwd)):
         print(f"  {name:34s} {t * 1e6:16.1f} {t / n * 1e9:12.0f} {t / total * 100:21.1f}%")
     print(f"  physics per game-frame: {tPhys / n / REPEAT * 1e9:.0f} ns")
-    # observation split: the same call without the landing prediction (23 inputs instead of 33), and the float32 zero + copy around it
-    mode = list(b.loopMode)
-    noLand = tuple(mode[:-1] + [False])
-    out32n, out64n = np.zeros((GAMES, N_IN - 10), np.float32), np.zeros((GAMES, N_IN - 10))
-    tObsNoLand = timeit(lambda: fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, n, out32n, *noLand))
-    tObsRaw = timeit(lambda: fe.observeMany(b.F, b.I, b.PL, b.MO, al, out64, *b.loopMode))
-    print(f"  observation without landing prediction: {tObsNoLand * 1e6:.1f} us  -> landing prediction = {(tObs - tObsNoLand) * 1e6:.1f} us "
-          f"({(tObs - tObsNoLand) / tObs * 100:.0f}% of the observation, {(tObs - tObsNoLand) / total * 100:.0f}% of a decision)")
+    tObsRaw = timeit(lambda: fe.observeMany(b.F, b.I, b.PL, b.MO, al, out64))
     print(f"  observeMany alone (no zeroing / float32 copy): {tObsRaw * 1e6:.1f} us -> zero + copy = {(tObs - tObsRaw) * 1e6:.1f} us")
 
 
@@ -167,12 +160,12 @@ def overhead(fe, net):
     loop running while few games are left.'''
     wTs, bs = net
     seeds = [int(s) for s in np.random.RandomState(3).randint(0, 2 ** 31, 200)]
-    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0, stable=LAYOUT)
-    alive, obs = b.startLoop(N_IN)
+    b = fe.FastBatch(seeds, None, 0, 0.0, 0.0, 1.0)
+    alive, obs = b.startLoop()
     n = len(alive)
     applied = np.full(200, 0.5)
     for _ in range(300):
-        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT, decide=False)
+        n = b.stepObserve(alive, n, forward(fe, obs[:n], wTs, bs), applied, SMOOTH, REPEAT)
     arrays = (b.F, b.I, b.PL, b.MO, b.BU, b.MT)
     snap = [a.copy() for a in arrays]
     al0 = alive[:n].copy()
@@ -188,11 +181,11 @@ def overhead(fe, net):
                 a[...] = v
             al = al0[:m].copy()
             ap_ = np.full(200, 0.5)
-            fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, m, b.obs, *b.loopMode)
+            fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, m, b.obs)
             k, steps, gd = m, 0, 0
             t = pc()
             if hasattr(b, "run"):    # the current loop; games rarely end within 30 decisions of this state, so m is the number alive throughout
-                b.run(al, k, wTs, bs, ap_, SMOOTH, REPEAT, False, 0, 30 * REPEAT)
+                b.run(al, k, wTs, bs, ap_, SMOOTH, REPEAT, 0, 30 * REPEAT)
                 steps, gd = 30, 30 * m
             else:
                 for _ in range(30):
@@ -200,7 +193,7 @@ def overhead(fe, net):
                         break
                     x = forward(fe, b.obs[:k], wTs, bs)
                     gd += k
-                    k = b.stepObserve(al, k, x, ap_, SMOOTH, REPEAT, decide=False)
+                    k = b.stepObserve(al, k, x, ap_, SMOOTH, REPEAT)
                     steps += 1
             el = pc() - t
             best = min(best, el / steps * 1e6)
@@ -213,7 +206,7 @@ def overhead(fe, net):
     for a, v in zip(arrays, snap):
         a[...] = v
     al = al0[:1].copy(); ap_ = np.full(200, 0.5)
-    fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, 1, b.obs, *b.loopMode)
+    fe.observeFloat32(b.F, b.I, b.PL, b.MO, al, 1, b.obs)
     x1 = forward(fe, b.obs[:1], wTs, bs)
     def tm(f, reps=3000):
         f(); t = pc()
@@ -225,7 +218,7 @@ def overhead(fe, net):
         with np.errstate(over="ignore"):
             return 1 / (1 + np.exp(-xl))
     tSig = tm(sig)
-    tStep = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, x1, ap_, SMOOTH, REPEAT, b.maxNoProgress, False, False, b.obs, *b.loopMode))
+    tStep = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, x1, ap_, SMOOTH, REPEAT, b.maxNoProgress, False, b.obs))
     print(f"  pieces with 1 game alive (old way): compiled forward {tLog:.1f} us, numpy sigmoid {tSig:.1f} us, stepObserveMany (the game itself, 1 game) {tStep:.1f} us")
     if hasattr(fe, "forwardNegated"):
         eNeg = fe.forwardNegated(b.obs[:1], wTs, bs)
@@ -234,7 +227,7 @@ def overhead(fe, net):
             with np.errstate(over="ignore"):
                 np.exp(eNeg.copy(), out=eNeg.copy())
         tExp = tm(expInPlace)
-        tStepE = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, np.exp(eNeg), ap_, SMOOTH, REPEAT, b.maxNoProgress, False, True, b.obs, *b.loopMode))
+        tStepE = tm(lambda: fe.stepObserveMany(b.F, b.I, b.PL, b.MO, b.BU, b.MT, al.copy(), 1, np.exp(eNeg), ap_, SMOOTH, REPEAT, b.maxNoProgress, True, b.obs))
         print(f"  pieces with 1 game alive (new way): forwardNegated {tNeg:.1f} us, np.exp (+2 small copies) {tExp:.1f} us, stepObserveMany(fromExp) incl. np.exp {tStepE:.1f} us")
 
 
@@ -260,10 +253,10 @@ def playGroup(fe, kids, seeds, maxStart=None, minStart=0, zero=0.0, maxFrames=10
     k, S = len(kids), len(seeds)
     ws, bs = stack(kids)
     t0 = pc()
-    b = fe.FastBatch(list(seeds) * k, maxStart, minStart, zero, 0.0, 1.0, stable=LAYOUT)
-    alive, obs = b.startLoop(N_IN)
+    b = fe.FastBatch(list(seeds) * k, maxStart, minStart, zero, 0.0, 1.0)
+    alive, obs = b.startLoop()
     applied = np.full(k * S, 0.5)
-    b.runGroup(alive, len(alive), ws, bs, S, applied, SMOOTH, REPEAT, False, 0, maxFrames)
+    b.runGroup(alive, len(alive), ws, bs, S, applied, SMOOTH, REPEAT, 0, maxFrames)
     return b.scores().reshape(k, S).copy(), pc() - t0
 
 
