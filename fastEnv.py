@@ -39,7 +39,7 @@ PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY:
 # behaviour counters (they only read the game, never change it): bullets fired, bullets fired while no monster was visible on screen, sum of the
 # absolute change of the applied steer between two decisions, the applied steer of the last decision (starts at 0.5 = straight),
 # network decisions the game lived through
-SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS = 8, 9, 10, 11, 12
+SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS = 8, 9, 10, 11, 12, 13    # HITS: monsters killed by a bullet
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
 # platform columns: x, y, width, breakable
@@ -339,6 +339,7 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
                     bulletGone |= 1 << i
                     monsterHit |= 1 << j
                     total += MONSTER_KILL_BONUS
+                    F[g, HITS] += 1.0
                     break    # this bullet is used up (the old loop skipped its remaining monsters through the bulletGone bit)
     if bulletGone != 0:
         k = 0
@@ -818,7 +819,7 @@ class FastBatch:
         G = len(seeds)
         self.G = G
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 13))
+        self.F = np.zeros((G, 14))
         self.F[:, LAST_STEER] = 0.5
         self.I = np.zeros((G, 8), dtype=np.int64)
         self.PL = np.zeros((G, MAXP, 4))
@@ -901,6 +902,10 @@ class FastBatch:
     def decisions(self):
         '''Per game: how many network decisions it lived through (frames = decisions * action repeat, the last one may be cut short by death).'''
         return self.F[:, DECISIONS]
+
+    def hits(self):
+        '''Per game: monsters killed by a bullet (bullets fired - hits = bullets that missed).'''
+        return self.F[:, HITS]
 
     def behaviour(self):
         '''Per game: (bullets fired, bullets fired with no monster visible, summed absolute steer change between decisions).'''
