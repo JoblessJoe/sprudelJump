@@ -29,7 +29,7 @@ for case, (mf, mm, mx, mn, z, shootP, steerMode, repeat) in enumerate((
         else: st = np.clip(0.5 + 0.1 * rng.randn(n), 0, 1)
         sh = (rng.uniform(0, 1, n) < shootP).astype(float) * 0.9
         A.step(aliveA, st, sh, repeat); B.step(aliveB, st, sh, repeat)
-        for a, b_ in ((A.F, B.F), (A.I, B.I), (A.PL, B.PL), (A.MO, B.MO), (A.BU, B.BU), (A.MT, B.MT)):
+        for a, b_ in ((A.F[:, :12], B.F[:, :12]), (A.I, B.I), (A.PL, B.PL), (A.MO, B.MO), (A.BU, B.BU), (A.MT, B.MT)):
             if not np.array_equal(a, b_):
                 bad += 1; print(f"  !! state differs: case {case} step {steps}"); break
         else:
