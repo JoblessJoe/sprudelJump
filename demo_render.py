@@ -161,8 +161,8 @@ def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
         screen.blit(background, (0, 0))
         for x, y, w, breakable in env.platforms:
             draw_platform(screen, (x, y, w, breakable))
-        for i, (mx, my) in enumerate(env.monsters):
-            screen.blit(monsterSurfs[i % 2], (int(mx), int(my)))
+        for mx, my in env.monsters:    # the look of a monster comes from its (never changing) x, not from its place in the list: when one dies the others keep their look
+            screen.blit(monsterSurfs[int(mx) % 2], (int(mx), int(my)))
         for bx, by in env.bullets:
             screen.blit(bulletSurf, (int(bx) - (bw - BULLET_WIDTH) // 2,
                                      int(by) - (bh - BULLET_HEIGHT) // 2))
