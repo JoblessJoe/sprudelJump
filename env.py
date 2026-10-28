@@ -101,6 +101,10 @@ class SprudelJumpEnv:
         self.pathSum = 0.0       # sideways distance travelled since the last bounce
         self.signedSum = 0.0     # net sideways displacement since the last bounce (screen wraps do not matter: sums of the moves)
         self.detour = 0.0        # over all finished jumps: sideways distance travelled minus the net displacement = the detour (back and forth)
+        self.devN = 0.0          # frames of the running jump; devSq = sum of d_t^2, devTd = sum of t * d_t (d_t = net displacement after t frames, t = 1..devN)
+        self.devSq = 0.0
+        self.devTd = 0.0
+        self.deviation = 0.0     # over all finished jumps: sum over the frames of (d_t - D * t / T)^2 in px^2, the squared distance from a straight line travelled at constant speed (D = displacement of the jump, T = its frames)
         self.caughtByMonster = False
         self.deathCause = 0
         self.framesWithoutProgress = 0
@@ -155,6 +159,9 @@ class SprudelJumpEnv:
         self.playerX += move
         self.pathSum += abs(move)
         self.signedSum += move
+        self.devN += 1.0
+        self.devSq += self.signedSum * self.signedSum
+        self.devTd += self.devN * self.signedSum
         if self.playerX < -PLAYER_WIDTH:
             self.playerX = SCREEN_WIDTH
         if self.playerX > SCREEN_WIDTH:
@@ -190,8 +197,14 @@ class SprudelJumpEnv:
         self.stompCount = len(monsterGone)
         if self.velY == BOUNCE_VELOCITY:    # a bounce (platform or stomp) ends a jump: its detour = distance travelled sideways - net displacement
             self.detour += self.pathSum - abs(self.signedSum)
+            n = self.devN
+            slope = self.signedSum / n
+            self.deviation += max(0.0, self.devSq - 2.0 * slope * self.devTd + slope * slope * (n * (n + 1.0) * (2.0 * n + 1.0) / 6.0))
             self.pathSum = 0.0
             self.signedSum = 0.0
+            self.devN = 0.0
+            self.devSq = 0.0
+            self.devTd = 0.0
         shoot = action[1] if isinstance(action, (list, tuple)) else 0.0
         if shoot > 0.5 and self.cooldown == 0:
             self.bullets.append([self.playerX + PLAYER_WIDTH / 2 - BULLET_WIDTH / 2, self.playerY])

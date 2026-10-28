@@ -41,6 +41,7 @@ PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY:
 # network decisions the game lived through
 SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS = 8, 9, 10, 11, 12, 13    # HITS: monsters killed by a bullet
 DETOUR, PATH_SUM, SIGNED_SUM = 14, 15, 16    # DETOUR: sideways distance travelled minus net displacement, summed over the finished jumps (see env.py)
+DEV_N, DEV_SQ, DEV_TD, DEVIATION = 17, 18, 19, 20    # running sums of the jump and DEVIATION: squared distance from a constant-speed straight line, summed over the finished jumps (see env.py)
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
 # platform columns: x, y, width, breakable
@@ -238,6 +239,9 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     px = F[g, PX] + move
     F[g, PATH_SUM] += abs(move)
     F[g, SIGNED_SUM] += move
+    F[g, DEV_N] += 1.0
+    F[g, DEV_SQ] += F[g, SIGNED_SUM] * F[g, SIGNED_SUM]
+    F[g, DEV_TD] += F[g, DEV_N] * F[g, SIGNED_SUM]
     if px < -PLAYER_WIDTH:
         px = float(SCREEN_WIDTH)
     if px > SCREEN_WIDTH:
@@ -419,8 +423,14 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     F[g, VY] = velY
     if velY == BOUNCE_VELOCITY:    # a bounce ends a jump
         F[g, DETOUR] += F[g, PATH_SUM] - abs(F[g, SIGNED_SUM])
+        n = F[g, DEV_N]
+        slope = F[g, SIGNED_SUM] / n
+        F[g, DEVIATION] += max(0.0, F[g, DEV_SQ] - 2.0 * slope * F[g, DEV_TD] + slope * slope * (n * (n + 1.0) * (2.0 * n + 1.0) / 6.0))
         F[g, PATH_SUM] = 0.0
         F[g, SIGNED_SUM] = 0.0
+        F[g, DEV_N] = 0.0
+        F[g, DEV_SQ] = 0.0
+        F[g, DEV_TD] = 0.0
     F[g, PY] = playerY
     F[g, TOTAL] = total
     # new platforms at the top (minY: the topmost platform, kept in F[g, TOPY] between frames when nothing changed it)
@@ -832,7 +842,7 @@ class FastBatch:
         G = len(seeds)
         self.G = G
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 17))
+        self.F = np.zeros((G, 21))
         self.F[:, LAST_STEER] = 0.5
         self.I = np.zeros((G, 8), dtype=np.int64)
         self.PL = np.zeros((G, MAXP, 4))
@@ -915,6 +925,10 @@ class FastBatch:
     def decisions(self):
         '''Per game: how many network decisions it lived through (frames = decisions * action repeat, the last one may be cut short by death).'''
         return self.F[:, DECISIONS]
+
+    def deviations(self):
+        '''Per game: summed squared distance from a constant-speed straight line over the finished jumps in px^2 (see env.py).'''
+        return self.F[:, DEVIATION]
 
     def detours(self):
         '''Per game: summed detour of the finished jumps in px (sideways distance travelled minus the net displacement per jump).'''
