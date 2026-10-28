@@ -45,6 +45,7 @@ def compare(cfg, seeds, frames, policy):
             st, sc, d = results[g]
             assert b.scores()[g] == sc, f"score differs: game {g} frame {f}: {b.scores()[g]} vs {sc}"
             assert bool(b.done()[g]) == d, f"game-over flag differs: game {g} frame {f}"
+            assert b.detours()[g] == envs[g].detour, f"detour differs: game {g} frame {f}: {b.detours()[g]} vs {envs[g].detour}"
             assert b.causes()[g] == envs[g].deathCause, f"death cause differs: game {g} frame {f}: {b.causes()[g]} vs {envs[g].deathCause}"
             states[g] = st
         checked += len(alive)

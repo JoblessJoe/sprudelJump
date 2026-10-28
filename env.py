@@ -13,6 +13,8 @@ GRAVITY = 0.4
 BOUNCE_VELOCITY = -13.0
 MAX_FALL_SPEED = 15.0
 HORIZONTAL_SPEED = 6.0
+STEER_DEAD_ZONE = 0.2   # a steer output within this distance of 0.5 means 'do not move'; beyond it the speed grows linearly to full speed at 0 / 1
+                        # (numba does not notice a changed constant: after editing it, delete __pycache__/fastEnv*.nbi and *.nbc)
 SCROLL_THRESHOLD_Y = SCREEN_HEIGHT * 0.4
 PLATFORM_GAP_MIN = 80
 PLATFORM_GAP_MAX = 130
@@ -96,6 +98,9 @@ class SprudelJumpEnv:
         self.brokenCount = 0
         self.stompCount = 0
         self.bulletKillCount = 0
+        self.pathSum = 0.0       # sideways distance travelled since the last bounce
+        self.signedSum = 0.0     # net sideways displacement since the last bounce (screen wraps do not matter: sums of the moves)
+        self.detour = 0.0        # over all finished jumps: sideways distance travelled minus the net displacement = the detour (back and forth)
         self.caughtByMonster = False
         self.deathCause = 0
         self.framesWithoutProgress = 0
@@ -141,7 +146,15 @@ class SprudelJumpEnv:
         self.caughtByMonster = False
         self.bounced = False
         steer = action[0] if isinstance(action, (list, tuple)) else action
-        self.playerX += (steer - 0.5) * 2 * HORIZONTAL_SPEED
+        d = steer - 0.5
+        move = 0.0
+        if d > STEER_DEAD_ZONE:
+            move = (d - STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
+        elif d < -STEER_DEAD_ZONE:
+            move = (d + STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
+        self.playerX += move
+        self.pathSum += abs(move)
+        self.signedSum += move
         if self.playerX < -PLAYER_WIDTH:
             self.playerX = SCREEN_WIDTH
         if self.playerX > SCREEN_WIDTH:
@@ -175,6 +188,10 @@ class SprudelJumpEnv:
         for m in monsterGone:
             self.monsters.remove(m)
         self.stompCount = len(monsterGone)
+        if self.velY == BOUNCE_VELOCITY:    # a bounce (platform or stomp) ends a jump: its detour = distance travelled sideways - net displacement
+            self.detour += self.pathSum - abs(self.signedSum)
+            self.pathSum = 0.0
+            self.signedSum = 0.0
         shoot = action[1] if isinstance(action, (list, tuple)) else 0.0
         if shoot > 0.5 and self.cooldown == 0:
             self.bullets.append([self.playerX + PLAYER_WIDTH / 2 - BULLET_WIDTH / 2, self.playerY])
