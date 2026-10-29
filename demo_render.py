@@ -15,6 +15,7 @@ from env import (SprudelJumpEnv, SCREEN_WIDTH, SCREEN_HEIGHT,
                  BULLET_WIDTH, BULLET_HEIGHT, BULLET_COOLDOWN_FRAMES, OBSERVATION_LENGTH)
 
 FPS = 60
+SPEEDS = (1, 2, 4, 8, 16)    # steps of the speed button (network play)
 BG_TOP = (30, 22, 66)
 BG_BOTTOM = (84, 46, 124)
 HILL_FAR = (44, 33, 84)
@@ -152,9 +153,14 @@ def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
         if name in sndBank:
             sndBank[name].play()
 
-    def ping(name):    # sound effects of single frames: silent when sped up (dozens of frames per picture would only be noise)
-        if speed == 1:
-            sfx(name)
+    pendingPings = set()
+
+    def ping(name):    # sound effects of single frames: collected and played once per drawn picture, so a sped-up demo does not stack the same sound many times
+        pendingPings.add(name)
+
+    def speed_button():
+        img = pill(font, f"SPEED x{speed}")
+        return img, img.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 34))
 
 
     def draw_world():
@@ -177,6 +183,8 @@ def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
         if policy:
             tip = smallFont.render(f"AI: {modelName}     R restart   Esc quit", True, DIM_TEXT)
             screen.blit(tip, tip.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
+            img, rect = speed_button()
+            screen.blit(img, rect)
         elif env.totalHeight < 50 and best == 0:
             tip = smallFont.render("arrows / A D to steer     SPACE to shoot", True, DIM_TEXT)
             screen.blit(tip, tip.get_rect(midbottom=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 10)))
@@ -205,6 +213,9 @@ def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
                 run = False
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 run = False
+            if (policy and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                    and speed_button()[1].collidepoint(event.pos)):    # speed button: next step of SPEEDS, back to x1 after the last
+                speed = next((s for s in SPEEDS if s > speed), SPEEDS[0])
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 state = env.reset()
                 frameInRepeat = 0
@@ -283,6 +294,9 @@ def main(modelPath=None, smoothing=0.96875, repeat=5, speed=1):
                 gameOverUntil = now + 1200
                 autoRestart = policy is not None
                 break
+        for name in pendingPings:
+            sfx(name)
+        pendingPings.clear()
         draw_world()
         draw_hud()
         pygame.display.flip()
@@ -296,6 +310,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", help="path to a .pt saved by tensorNetwork's saveNetwork(); the network plays instead of the keyboard")
     parser.add_argument("--smoothing", type=float, default=0.96875, help="steer smoothing the model was trained with (default 0.96875 = action repeat 5, 1 = none)")
     parser.add_argument("--repeat", type=int, default=5, help="action repeat the model was trained with: the network decides every n-th frame and its action is held in between (smoothing is applied once per decision)")
-    parser.add_argument("--speed", type=int, default=1, help="network play: game frames per drawn picture (e.g. 4 = four times as fast; sounds are muted above 1)")
+    parser.add_argument("--speed", type=int, default=1, help="network play: game frames per drawn picture (e.g. 4 = four times as fast; also the SPEED button at the bottom)")
     a = parser.parse_args()
     main(a.model, a.smoothing, a.repeat, max(1, a.speed))
