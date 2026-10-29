@@ -49,7 +49,7 @@ class SprudelJumpEnv:
     demo_render.py for the human-playable pygame wrapper around this class.
     '''
 
-    def __init__(self, maxFramesWithoutProgress=600, seed=None):
+    def __init__(self, maxFramesWithoutProgress=600, seed=None, steerDeadZone=STEER_DEAD_ZONE):
         '''maxFramesWithoutProgress: episode ends once the player hasn't reached
         a new highest point (world altitude, not score) for this many frames in a
         row - stops agents from surviving forever without climbing, e.g. bouncing
@@ -62,6 +62,7 @@ class SprudelJumpEnv:
         The observation is _getState's 33 floats (layout below its definition).'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.seed = seed
+        self.steerDeadZone = steerDeadZone    # a steer output within this distance of 0.5 means 'do not move' (STEER_DEAD_ZONE by default)
         self.deathCause = 0   # why the last game ended: 0 = running, 1 = monster while rising, 2 = monster otherwise, 3 = fell, 4 = no progress
         self.bounced = False
         self.reset()
@@ -152,10 +153,11 @@ class SprudelJumpEnv:
         steer = action[0] if isinstance(action, (list, tuple)) else action
         d = steer - 0.5
         move = 0.0
-        if d > STEER_DEAD_ZONE:
-            move = (d - STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
-        elif d < -STEER_DEAD_ZONE:
-            move = (d + STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
+        dz = self.steerDeadZone
+        if d > dz:
+            move = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
+        elif d < -dz:
+            move = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
         self.playerX += move
         self.pathSum += abs(move)
         self.signedSum += move

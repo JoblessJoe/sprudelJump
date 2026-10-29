@@ -41,6 +41,7 @@ PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY:
 # network decisions the game lived through
 SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS = 8, 9, 10, 11, 12, 13    # HITS: monsters killed by a bullet
 DETOUR, PATH_SUM, SIGNED_SUM = 14, 15, 16    # DETOUR: sideways distance travelled minus net displacement, summed over the finished jumps (see env.py)
+DEAD_ZONE = 21    # the steer dead zone of this game (env.STEER_DEAD_ZONE by default; a batch can set another one: 0 at the start of a run from scratch, see FastBatch)
 DEV_N, DEV_SQ, DEV_TD, DEVIATION = 17, 18, 19, 20    # running sums of the jump and DEVIATION: squared distance from a constant-speed straight line, summed over the finished jumps (see env.py)
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
@@ -232,10 +233,11 @@ def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     '''Advances game g by one frame. Returns True if the game is over.'''
     d = steer - 0.5
     move = 0.0
-    if d > STEER_DEAD_ZONE:
-        move = (d - STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
-    elif d < -STEER_DEAD_ZONE:
-        move = (d + STEER_DEAD_ZONE) / (0.5 - STEER_DEAD_ZONE) * HORIZONTAL_SPEED
+    dz = F[g, DEAD_ZONE]
+    if d > dz:
+        move = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
+    elif d < -dz:
+        move = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
     px = F[g, PX] + move
     F[g, PATH_SUM] += abs(move)
     F[g, SIGNED_SUM] += move
@@ -838,12 +840,14 @@ def unit(e, fromExp):
 class FastBatch:
     '''G games (one per seed) held in arrays, played in lockstep by the compiled functions above.'''
 
-    def __init__(self, seeds, maxStartHeight=None, minStartHeight=0, zeroFraction=0.0, monsterFraction=0.0, monsterMult=1.0, maxFramesWithoutProgress=600):
+    def __init__(self, seeds, maxStartHeight=None, minStartHeight=0, zeroFraction=0.0, monsterFraction=0.0, monsterMult=1.0, maxFramesWithoutProgress=600, deadZone=STEER_DEAD_ZONE):
+        '''deadZone: the steer dead zone of every game of the batch (env.py: STEER_DEAD_ZONE; 0 = the steer output moves the player linearly from 0.5 on).'''
         G = len(seeds)
         self.G = G
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 21))
+        self.F = np.zeros((G, 22))
         self.F[:, LAST_STEER] = 0.5
+        self.F[:, DEAD_ZONE] = deadZone
         self.I = np.zeros((G, 8), dtype=np.int64)
         self.PL = np.zeros((G, MAXP, 4))
         self.MO = np.zeros((G, MAXM, 2))

@@ -15,6 +15,8 @@ CONFIGS = [
     dict(maxStart=30000, minStart=0, zero=0.0, mf=0.0, mm=1.0),
     dict(maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0),
     dict(maxStart=None, minStart=0, zero=0.0, mf=1.0, mm=4.0),    # monster-heavy levels (bullets vs monsters at the top edge)
+    dict(maxStart=None, minStart=0, zero=0.0, mf=0.0, mm=1.0, dz=0.0),    # steer dead zone 0 (the start of a run from scratch)
+    dict(maxStart=30000, minStart=20000, zero=0.5, mf=0.3, mm=2.0, dz=0.1),
 ]
 POLICIES = {
     "random": lambda rng, f: [rng.random(), 1.0 if rng.random() > 0.5 else 0.0],
@@ -25,9 +27,9 @@ POLICIES = {
 
 def compare(cfg, seeds, frames, policy):
     '''Plays the games in both envs with identical actions; asserts equal observations, scores and game-over flags every frame.'''
-    envs = [SprudelJumpEnv() for _ in seeds]
+    envs = [SprudelJumpEnv(steerDeadZone=cfg.get("dz", 0.2)) for _ in seeds]
     states = {g: e.reset(cfg["maxStart"], s, cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"]) for g, (e, s) in enumerate(zip(envs, seeds))}
-    b = FastBatch(seeds, cfg["maxStart"], cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"])
+    b = FastBatch(seeds, cfg["maxStart"], cfg["minStart"], cfg["zero"], cfg["mf"], cfg["mm"], deadZone=cfg.get("dz", 0.2))
     alive = list(range(len(seeds)))
     rng = random.Random(1)
     checked = 0

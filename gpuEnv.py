@@ -93,15 +93,15 @@ NPL = NS["PLATFORMS_BELOW"] + NS["PLATFORMS_ABOVE"]
 NMO = NS["MONSTERS_BELOW"] + NS["MONSTERS_ABOVE"]
 NH = 33    # hidden width of the network (33-33-33-33-2)
 (PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY, SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS, DETOUR, PATH_SUM, SIGNED_SUM,
- DEV_N, DEV_SQ, DEV_TD, DEVIATION) = (NS[n] for n in ("PX", "PY", "VY", "TOTAL", "OFFSET", "BEST", "MMULT", "TOPY", "SHOTS", "SHOTS_FREE", "STEER_VAR", "LAST_STEER",
-                                                     "DECISIONS", "HITS", "DETOUR", "PATH_SUM", "SIGNED_SUM", "DEV_N", "DEV_SQ", "DEV_TD", "DEVIATION"))
+ DEV_N, DEV_SQ, DEV_TD, DEVIATION, DEAD_ZONE) = (NS[n] for n in ("PX", "PY", "VY", "TOTAL", "OFFSET", "BEST", "MMULT", "TOPY", "SHOTS", "SHOTS_FREE", "STEER_VAR", "LAST_STEER",
+                                                     "DECISIONS", "HITS", "DETOUR", "PATH_SUM", "SIGNED_SUM", "DEV_N", "DEV_SQ", "DEV_TD", "DEVIATION", "DEAD_ZONE"))
 (COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE) = (NS[n] for n in ("COOL", "FWP", "NP", "NM", "NB", "DONE", "BOUNCED", "CAUSE"))
 MAXP, MAXM, MAXB = NS["MAXP"], NS["MAXM"], NS["MAXB"]
-NF, NI = 21, 8    # float / int state columns per game (FastBatch.__init__)
+NF, NI = 22, 8    # float / int state columns per game (FastBatch.__init__)
 
 
 @cuda.jit
-def initKernel(F, I, PL, MO, MT, seeds, maxStart, minStart, zeroFraction, monsterFraction, monsterMult):
+def initKernel(F, I, PL, MO, MT, seeds, maxStart, minStart, zeroFraction, monsterFraction, monsterMult, deadZone):
     g = cuda.grid(1)
     if g >= F.shape[1]:
         return
@@ -110,6 +110,7 @@ def initKernel(F, I, PL, MO, MT, seeds, maxStart, minStart, zeroFraction, monste
     for j in range(I.shape[0]):
         I[j, g] = 0
     F[LAST_STEER, g] = 0.5
+    F[DEAD_ZONE, g] = deadZone
     resetGame(F, I, PL, MO, MT, g, seeds[g], maxStart, minStart, zeroFraction, monsterFraction, monsterMult)
 
 
@@ -221,7 +222,7 @@ class GpuBatch:
         self.blocks = (G + self.threads - 1) // self.threads
 
     def evaluate(self, weights, seeds, smooth=0.96875, repeat=5, maxStart=None, minStart=0, zeroFraction=0.0, monsterFraction=0.0, monsterMult=1.0,
-                 maxFrames=100_000, chunk=400, maxNoProgress=600, compactBelow=0.95):
+                 maxFrames=100_000, chunk=400, maxNoProgress=600, compactBelow=0.95, deadZone=0.2):
         '''weights: (W0, B0, W1, B1, W2, B2, W3, B3), float32, W [C, in, out] (the transposed torch weights), B [C, out]. seeds: `games` ints, every child plays the same.
         Returns a dict of arrays [C, games]: score and the counters (shots, shotsFree, steerChange, hits, detour, deviation, decisions) of fastEnv.
         The games run in chunks of `chunk` decisions; after a chunk, when fewer than compactBelow of the games in the threads are still running, those are copied
@@ -232,7 +233,7 @@ class GpuBatch:
         G, tpb = self.G, self.threads
         seedsAll = cuda.to_device(np.tile(np.asarray(seeds, dtype=np.int64), self.C))
         initKernel[(G + tpb - 1) // tpb, tpb](cur["F"], cur["I"], cur["PL"], cur["MO"], cur["MT"], seedsAll, -1 if maxStart is None else int(maxStart), int(minStart),
-                                              float(zeroFraction), float(monsterFraction), float(monsterMult))
+                                              float(zeroFraction), float(monsterFraction), float(monsterMult), float(deadZone))
         cur["applied"].copy_to_device(np.full(G, 0.5))
         origin = np.arange(G, dtype=np.int64)
         cur["origin"].copy_to_device(origin)
