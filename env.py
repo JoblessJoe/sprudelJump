@@ -309,8 +309,9 @@ class SprudelJumpEnv:
         centerX = self.playerX + PLAYER_WIDTH / 2
         vy = self.velY / MAX_FALL_SPEED
         state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)]
-        below = sorted((p for p in self.platforms if p[1] >= feet), key=lambda p: p[1])[:PLATFORMS_BELOW]     # nearest first (smallest y >= feet)
-        above = sorted((p for p in self.platforms if p[1] < feet), key=lambda p: -p[1])[:PLATFORMS_ABOVE]
+        visiblePlatforms = [p for p in self.platforms if p[1] + PLATFORM_HEIGHT > 0]    # only what is on the screen (a human cannot see above the top edge)
+        below = sorted((p for p in visiblePlatforms if p[1] >= feet), key=lambda p: p[1])[:PLATFORMS_BELOW]     # nearest first (smallest y >= feet)
+        above = sorted((p for p in visiblePlatforms if p[1] < feet), key=lambda p: -p[1])[:PLATFORMS_ABOVE]
         for group, n, pad in ((below, PLATFORMS_BELOW, (0.0, -1.0, 0.0)), (above, PLATFORMS_ABOVE, (0.0, 1.0, 0.0))):
             for p in group:
                 dx = p[0] + p[2] / 2 - centerX
@@ -325,8 +326,9 @@ class SprudelJumpEnv:
             for _ in range(n - len(group)):
                 state.extend(pad)
         platBelow, platAbove = below, above
-        below = sorted((m for m in self.monsters if m[1] >= feet), key=lambda m: m[1])[:MONSTERS_BELOW]
-        above = sorted((m for m in self.monsters if m[1] < feet), key=lambda m: -m[1])[:MONSTERS_ABOVE]
+        visibleMonsters = [m for m in self.monsters if m[1] + MONSTER_HEIGHT > 0]
+        below = sorted((m for m in visibleMonsters if m[1] >= feet), key=lambda m: m[1])[:MONSTERS_BELOW]
+        above = sorted((m for m in visibleMonsters if m[1] < feet), key=lambda m: -m[1])[:MONSTERS_ABOVE]
         for group, n, pad in ((below, MONSTERS_BELOW, (0.0, -1.0)), (above, MONSTERS_ABOVE, (0.0, 1.0))):
             for m in group:
                 dx = m[0] + MONSTER_WIDTH / 2 - centerX

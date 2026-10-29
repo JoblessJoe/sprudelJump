@@ -25,7 +25,7 @@ except ImportError:
     HAVE_BLAS = False
 
 
-from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_WIDTH, GRAVITY, BOUNCE_VELOCITY,
+from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_WIDTH, PLATFORM_HEIGHT, GRAVITY, BOUNCE_VELOCITY,
                  MAX_FALL_SPEED, HORIZONTAL_SPEED, STEER_DEAD_ZONE, SCROLL_THRESHOLD_Y, PLATFORM_GAP_MIN, PLATFORM_GAP_MAX, DIFFICULTY_MAX_HEIGHT,
                  PLATFORM_GAP_MIN_HARD, PLATFORM_GAP_MAX_HARD, PLATFORM_WIDTH_MIN, BREAKABLE_CHANCE_BASE, BREAKABLE_CHANCE_MAX,
                  MONSTER_WIDTH, MONSTER_HEIGHT, MONSTER_SPAWN_CHANCE_BASE, MONSTER_SPAWN_CHANCE_MAX, MONSTER_SPAWN_CHANCE_CAP,
@@ -500,6 +500,8 @@ def slotIds(F, I, PL, g, out):
     ca = 0
     for i in range(nP):
         y = PL[g, i, 1]
+        if y + PLATFORM_HEIGHT <= 0:    # completely above the screen: not visible, not in the observation
+            continue
         if y >= feet:
             if cb < pb:
                 p = cb
@@ -538,6 +540,8 @@ def monsterIds(F, I, MO, g, out):
     ca = 0
     for i in range(nM):
         y = MO[g, i, 1]
+        if y + MONSTER_HEIGHT <= 0:    # completely above the screen: not visible, not in the observation
+            continue
         if y >= feet:
             if cb < mb:
                 p = cb

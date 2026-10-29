@@ -21,7 +21,7 @@ cpu = fastEnv.FastBatch(seeds, None, 0, 0.0, 1.0, 4.0)    # monster-heavy levels
 F = cuda.device_array((ge.NF, G)); I = cuda.device_array((ge.NI, G), dtype=np.int64)
 PL = cuda.device_array((4, ge.MAXP, G)); MO = cuda.device_array((2, ge.MAXM, G)); BU = cuda.device_array((2, ge.MAXB, G)); MT = cuda.device_array((625, G), dtype=np.int64)
 blocks, threads = (G + 127) // 128, 128
-ge.initKernel[blocks, threads](F, I, PL, MO, MT, cuda.to_device(np.array(seeds, dtype=np.int64)), -1, 0, 0.0, 1.0, 4.0)
+ge.initKernel[blocks, threads](F, I, PL, MO, MT, cuda.to_device(np.array(seeds, dtype=np.int64)), -1, 0, 0.0, 1.0, 4.0, 0.2)
 
 
 def same(a, b):
