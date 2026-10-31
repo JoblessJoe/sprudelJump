@@ -4,7 +4,7 @@ The Python env (env.py) stays the reference: every rule here is a line-by-line p
 CPython's own Mersenne Twister (seeding, random(), uniform(), randint()), so the same seed gives the same levels and, with
 the same actions, the same scores bit for bit (see test_fastEnv.py).
 
-Observation: the fixed layout of env.py (3 platforms below, 2 above, 1 monster below, 2 above, landing prediction per platform; 33 floats).
+Observation: the fixed layout of env.py (x, velY, velX, 3 platforms below, 2 above, 1 monster below, 2 above; 24 floats).
 Practice modes: startHeight / zeroFraction / monsterFraction. Seeds must be ints in [0, 2**32).
 
 Typical use (see tensorNetwork/proSprudler.evaluateNetworkFast):
@@ -26,13 +26,12 @@ except ImportError:
 
 
 from env import (SCREEN_WIDTH, HALF_WIDTH, SCREEN_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, PLATFORM_WIDTH, PLATFORM_HEIGHT, GRAVITY, BOUNCE_VELOCITY,
-                 MAX_FALL_SPEED, HORIZONTAL_SPEED, STEER_DEAD_ZONE, SCROLL_THRESHOLD_Y, PLATFORM_GAP_MIN, PLATFORM_GAP_MAX, DIFFICULTY_MAX_HEIGHT,
+                 MAX_FALL_SPEED, HORIZONTAL_SPEED, MOMENTUM, STEER_DEAD_ZONE, SCROLL_THRESHOLD_Y, PLATFORM_GAP_MIN, PLATFORM_GAP_MAX, DIFFICULTY_MAX_HEIGHT,
                  PLATFORM_GAP_MIN_HARD, PLATFORM_GAP_MAX_HARD, PLATFORM_WIDTH_MIN, BREAKABLE_CHANCE_BASE, BREAKABLE_CHANCE_MAX,
                  MONSTER_WIDTH, MONSTER_HEIGHT, MONSTER_SPAWN_CHANCE_BASE, MONSTER_SPAWN_CHANCE_MAX, MONSTER_SPAWN_CHANCE_CAP,
                  MONSTER_KILL_BONUS, BULLET_WIDTH, BULLET_HEIGHT, BULLET_SPEED, BULLET_COOLDOWN_FRAMES, PROGRESS_MARGIN,
                  PLATFORMS_BELOW, PLATFORMS_ABOVE, MONSTERS_BELOW, MONSTERS_ABOVE, OBSERVATION_LENGTH)
 
-LAND_TMAX, LAND_TOLERANCE = 100, 40.0    # landingInfo, see env.py
 MAXP, MAXM, MAXB = 48, 48, 24          # array capacities per game (a screen holds ~12 platforms, ~7 bullets)
 # float state columns F[g, :]
 PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY: y of the topmost platform after the last frame
@@ -42,6 +41,7 @@ PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY = 0, 1, 2, 3, 4, 5, 6, 7    # TOPY:
 SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS = 8, 9, 10, 11, 12, 13    # HITS: monsters killed by a bullet
 DETOUR, PATH_SUM, SIGNED_SUM = 14, 15, 16    # DETOUR: sideways distance travelled minus net displacement, summed over the finished jumps (see env.py)
 DEAD_ZONE = 21    # the steer dead zone of this game (env.STEER_DEAD_ZONE by default; a batch can set another one: 0 at the start of a run from scratch, see FastBatch)
+VX = 22    # sideways speed (momentum, see env.py MOMENTUM)
 DEV_N, DEV_SQ, DEV_TD, DEVIATION = 17, 18, 19, 20    # running sums of the jump and DEVIATION: squared distance from a constant-speed straight line, summed over the finished jumps (see env.py)
 # int state columns I[g, :]
 COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE = 0, 1, 2, 3, 4, 5, 6, 7   # CAUSE: 0 running, 1 monster while rising, 2 monster otherwise, 3 fell, 4 no progress
@@ -183,6 +183,7 @@ def resetGame(F, I, PL, MO, MT, g, seed, maxStart, minStart, zeroFraction, monst
     F[g, PX] = SCREEN_WIDTH / 2
     F[g, PY] = SCREEN_HEIGHT / 2
     F[g, VY] = 0.0
+    F[g, VX] = 0.0
     offset = 0.0
     if maxStart >= 0:
         zero = False
@@ -232,12 +233,14 @@ def resetAll(F, I, PL, MO, MT, seeds, maxStart, minStart, zeroFraction, monsterF
 def stepGame(F, I, PL, MO, BU, MT, g, steer, shoot, maxNoProgress):
     '''Advances game g by one frame. Returns True if the game is over.'''
     d = steer - 0.5
-    move = 0.0
+    target = 0.0
     dz = F[g, DEAD_ZONE]
     if d > dz:
-        move = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
+        target = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
     elif d < -dz:
-        move = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
+        target = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
+    F[g, VX] += MOMENTUM * (target - F[g, VX])
+    move = F[g, VX]
     px = F[g, PX] + move
     F[g, PATH_SUM] += abs(move)
     F[g, SIGNED_SUM] += move
@@ -569,150 +572,14 @@ def monsterIds(F, I, MO, g, out):
 
 
 @njit(cache=True)
-def landFrames(vy, rel):
-    '''Frames until the feet land on a platform whose height relative to the feet is rel (= feet - platform y), 0 = none within LAND_TMAX (as env.py).'''
-    v = vy
-    for t in range(1, LAND_TMAX + 1):
-        v = min(v + GRAVITY, MAX_FALL_SPEED)
-        prev = rel
-        rel += v
-        if v > 0:
-            if prev <= 0 <= rel:
-                return t
-            if rel > 0:      # falling and already below the platform: rel only grows from here, it can never land
-                return 0
-    return 0
-
-
-LAND_EPS = 1e-6    # far above the rounding gap between the closed form below and landFrames' running sum (~1e-12), far below any real distance
-
-
-@njit(cache=True)
-def landPath(vy):
-    '''The fall path shared by all platforms of one frame, in closed form: v_k = vy + k * GRAVITY until it reaches MAX_FALL_SPEED (after K frames).
-    Returns (t0, K, A, Z), t0 = first frame with v > 0; t0 = -1 if some v_k is within LAND_EPS of 0 (then the sign of v is a rounding question).
-    A = pathSum(t0 - 1), Z = pathSum(LAND_TMAX): the same for every platform of this frame, so they are computed once here.'''
-    K = int((MAX_FALL_SPEED - vy) / GRAVITY)
-    if K < 0:
-        K = 0
-    k0 = -vy / GRAVITY
-    r = int(round(k0))
-    if r >= 1 and abs(vy + r * GRAVITY) < LAND_EPS:
-        return -1, K, 0.0, 0.0
-    t0 = int(np.floor(k0)) + 1 if vy < 0 else 1
-    return t0, K, pathSum(vy, K, t0 - 1), pathSum(vy, K, LAND_TMAX)
-
-
-@njit(cache=True)
-def pathSum(vy, K, t):
-    '''v_1 + ... + v_t of landPath's path (equals landFrames' running sum up to rounding).'''
-    if t <= K:
-        return t * vy + GRAVITY * t * (t + 1) / 2
-    return K * vy + GRAVITY * K * (K + 1) / 2 + (t - K) * MAX_FALL_SPEED
-
-
-@njit(cache=True)
-def landFramesPathChecked(vy, rel, t0, K, A, Z):
-    '''Slow path of landFramesPath. Same result as landFrames(vy, rel), without the frame loop: from t0 on rel only grows, so it is the first t >= t0 with
-    rel + pathSum(t) >= 0 (0 if rel + pathSum(t0 - 1) > 0: already below the platform when it starts falling), found with the quadratic
-    formula. The closed form differs from landFrames' running sum by rounding only, so whenever a deciding value is within LAND_EPS of 0
-    the exact loop decides instead.'''
-    if t0 < 0:
-        return landFrames(vy, rel)
-    if t0 > LAND_TMAX:
-        return 0
-    before = rel + A
-    if abs(before) < LAND_EPS:
-        return landFrames(vy, rel)
-    if before > 0:
-        return 0
-    last = rel + Z
-    if abs(last) < LAND_EPS:
-        return landFrames(vy, rel)
-    if last < 0:
-        return 0
-    # first guess: larger root of GRAVITY/2 t^2 + (vy + GRAVITY/2) t + rel = 0, or the straight part after K
-    b = vy + GRAVITY / 2
-    d = b * b - 2 * GRAVITY * rel
-    t = int(np.ceil((-b + np.sqrt(d)) / GRAVITY)) if d >= 0 else t0
-    if t > K:
-        t = K + int(np.ceil(-(rel + pathSum(vy, K, K)) / MAX_FALL_SPEED))
-    t = min(max(t, t0), LAND_TMAX)
-    while t > t0 and rel + pathSum(vy, K, t - 1) >= 0:    # the guess is off by at most one or two frames
-        t -= 1
-    while rel + pathSum(vy, K, t) < 0:
-        t += 1
-    if abs(rel + pathSum(vy, K, t)) < LAND_EPS or (t > t0 and abs(rel + pathSum(vy, K, t - 1)) < LAND_EPS):
-        return landFrames(vy, rel)
-    return t
-
-
-@njit(cache=True)
-def landFramesPath(vy, rel, t0, K, A, Z):
-    '''Same result as landFrames(vy, rel) (and as landFramesPathChecked), faster: the quadratic-formula guess is verified with ONE pathSum
-    (s = rel + S_t, and S_(t-1) = S_t - v_t) instead of the up-to-five calls of the checked version. The guess is accepted only when
-    s >= 0 and (t == t0 or rel + S_(t-1) < 0) with both values more than LAND_EPS away from 0; every other case (a corrected guess, a value
-    within LAND_EPS of 0) goes to landFramesPathChecked, which corrects the guess and falls back to the exact loop near boundaries.
-    t == t0 needs no check of S_(t-1): it is 'before' (rel + A), already known to be < -LAND_EPS at that point.'''
-    if t0 < 0:
-        return landFrames(vy, rel)
-    if t0 > LAND_TMAX:
-        return 0
-    before = rel + A
-    if before > -LAND_EPS:
-        if before < LAND_EPS:
-            return landFrames(vy, rel)
-        return 0
-    last = rel + Z
-    if last < LAND_EPS:
-        if last > -LAND_EPS:
-            return landFrames(vy, rel)
-        return 0
-    b = vy + GRAVITY / 2
-    d = b * b - 2 * GRAVITY * rel
-    t = int(np.ceil((-b + np.sqrt(d)) / GRAVITY)) if d >= 0 else t0
-    if t > K:
-        t = K + int(np.ceil(-(rel + pathSum(vy, K, K)) / MAX_FALL_SPEED))
-    t = min(max(t, t0), LAND_TMAX)
-    s = rel + pathSum(vy, K, t)
-    if s >= LAND_EPS and (t == t0 or s - (vy + t * GRAVITY if t <= K else MAX_FALL_SPEED) < -LAND_EPS):
-        return t
-    return landFramesPathChecked(vy, rel, t0, K, A, Z)
-
-
-@njit(cache=True)
-def landingFeatures(F, PL, g, row, c, i, feet, t0, K, A, Z):
-    '''Landing prediction [T, r] of platform index i (-1 = empty slot), written to row[c], row[c + 1]. t0, K, A, Z: this frame's landPath.'''
-    if i < 0:
-        row[c] = 1.0
-        row[c + 1] = 1.0
-        return
-    frames = landFramesPath(F[g, VY], feet - PL[g, i, 1], t0, K, A, Z)
-    if frames == 0:
-        row[c] = 1.0
-        row[c + 1] = 1.0
-    else:
-        dx = PL[g, i, 0] + PL[g, i, 2] / 2 - (F[g, PX] + PLAYER_WIDTH / 2)
-        if dx > HALF_WIDTH:
-            dx -= SCREEN_WIDTH
-        elif dx < -HALF_WIDTH:
-            dx += SCREEN_WIDTH
-        need = abs(dx) - LAND_TOLERANCE
-        if need < 0.0:
-            need = 0.0
-        r = need / (HORIZONTAL_SPEED * frames)
-        row[c] = frames / LAND_TMAX
-        row[c + 1] = (2.0 if r > 2.0 else r) / 2.0
-
-
-@njit(cache=True)
 def observeGame(F, I, PL, MO, g, row, ids, mids):
-    '''Writes the OBSERVATION_LENGTH (33) state floats of game g into row (layout: see env.py _getState).'''
+    '''Writes the OBSERVATION_LENGTH (24) state floats of game g into row (layout: see env.py _getState).'''
     feet = F[g, PY] + PLAYER_HEIGHT
     vy = F[g, VY] / MAX_FALL_SPEED
     row[0] = F[g, PX] / SCREEN_WIDTH
     row[1] = -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)
-    c = 2
+    row[2] = F[g, VX] / HORIZONTAL_SPEED
+    c = 3
     slotIds(F, I, PL, g, ids)
     for s in range(PLATFORMS_BELOW + PLATFORMS_ABOVE):
         i = ids[s]
@@ -734,10 +601,6 @@ def observeGame(F, I, PL, MO, g, row, ids, mids):
         else:
             row[c] = relXY(F, g, MO[g, i, 0], MONSTER_WIDTH)
             row[c + 1] = clampRel(feet, MO[g, i, 1])
-        c += 2
-    t0, K, A, Z = landPath(F[g, VY])
-    for s in range(PLATFORMS_BELOW + PLATFORMS_ABOVE):
-        landingFeatures(F, PL, g, row, c, ids[s], feet, t0, K, A, Z)
         c += 2
 
 
@@ -849,7 +712,7 @@ class FastBatch:
         G = len(seeds)
         self.G = G
         self.maxNoProgress = -1 if maxFramesWithoutProgress is None else maxFramesWithoutProgress
-        self.F = np.zeros((G, 22))
+        self.F = np.zeros((G, 23))
         self.F[:, LAST_STEER] = 0.5
         self.F[:, DEAD_ZONE] = deadZone
         self.I = np.zeros((G, 8), dtype=np.int64)

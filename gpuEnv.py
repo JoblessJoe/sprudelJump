@@ -1,7 +1,7 @@
 '''
 GPU evaluation of many games (numba.cuda): one GPU thread plays one whole game, from the reset to the end, including the network's forward pass.
 
-The game code is NOT copied: the device functions (Mersenne Twister, level generation, one frame, observation with landing prediction, counters) are
+The game code is NOT copied: the device functions (Mersenne Twister, level generation, one frame, observation, counters) are
 compiled from fastEnv.py's own source (ast), with `@njit` turned into `@cuda.jit(device=True)` and np.floor / np.ceil / np.sqrt / np.inf into the math module.
 A change of the rules in fastEnv.py therefore reaches the GPU version automatically. Only the driver (reset, forward pass, decision loop) lives here.
 
@@ -28,8 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 WANTED = ("mtSeed", "mtNext", "rndRandom", "rndUniform", "rndRandint", "addPlatform", "spawnPlatformAbove", "resetGame", "stepGame",
-          "relXY", "clampRel", "slotIds", "monsterIds", "landFrames", "landPath", "pathSum", "landFramesPathChecked", "landFramesPath",
-          "landingFeatures", "observeGame")
+          "relXY", "clampRel", "slotIds", "monsterIds", "observeGame")
 
 
 def toTransposed(text):
@@ -91,13 +90,13 @@ for _name in WANTED:
 NIN = NS["OBSERVATION_LENGTH"]
 NPL = NS["PLATFORMS_BELOW"] + NS["PLATFORMS_ABOVE"]
 NMO = NS["MONSTERS_BELOW"] + NS["MONSTERS_ABOVE"]
-NH = 33    # hidden width of the network (33-33-33-33-2)
+NH = NIN    # hidden width of the network = input size (24-24-24-24-2; the kernel's local arrays need it at compile time)
 (PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY, SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS, DETOUR, PATH_SUM, SIGNED_SUM,
  DEV_N, DEV_SQ, DEV_TD, DEVIATION, DEAD_ZONE) = (NS[n] for n in ("PX", "PY", "VY", "TOTAL", "OFFSET", "BEST", "MMULT", "TOPY", "SHOTS", "SHOTS_FREE", "STEER_VAR", "LAST_STEER",
                                                      "DECISIONS", "HITS", "DETOUR", "PATH_SUM", "SIGNED_SUM", "DEV_N", "DEV_SQ", "DEV_TD", "DEVIATION", "DEAD_ZONE"))
 (COOL, FWP, NP, NM, NB, DONE, BOUNCED, CAUSE) = (NS[n] for n in ("COOL", "FWP", "NP", "NM", "NB", "DONE", "BOUNCED", "CAUSE"))
 MAXP, MAXM, MAXB = NS["MAXP"], NS["MAXM"], NS["MAXB"]
-NF, NI = 22, 8    # float / int state columns per game (FastBatch.__init__)
+NF, NI = 23, 8    # float / int state columns per game (FastBatch.__init__)
 
 
 @cuda.jit
@@ -228,6 +227,8 @@ class GpuBatch:
         The games run in chunks of `chunk` decisions; after a chunk, when fewer than compactBelow of the games in the threads are still running, those are copied
         densely into the other set of arrays (a warp otherwise runs until its longest game is over: ~30% of the lanes did work, the mean game has ~3,700
         decisions, the longest 20,000).'''
+        assert weights[0].shape[1:] == (NIN, NH) and weights[2].shape[1:] == (NH, NH) and weights[6].shape[1:] == (NH, 2), \
+            f"the GPU kernel is compiled for {NIN}-{NH}-{NH}-{NH}-2, got W0 {weights[0].shape}"
         dev = [cuda.to_device(np.ascontiguousarray(w, dtype=np.float32)) for w in weights]
         cur, other = self.sets
         G, tpb = self.G, self.threads

@@ -13,6 +13,7 @@ GRAVITY = 0.4
 BOUNCE_VELOCITY = -13.0
 MAX_FALL_SPEED = 15.0
 HORIZONTAL_SPEED = 6.0
+MOMENTUM = 0.2         # horizontal inertia: each frame the sideways speed moves this share of the way to the speed the steer asks for (~10 frames to full speed)
 STEER_DEAD_ZONE = 0.2   # a steer output within this distance of 0.5 means 'do not move'; beyond it the speed grows linearly to full speed at 0 / 1
                         # (numba does not notice a changed constant: after editing it, delete __pycache__/fastEnv*.nbi and *.nbc)
 SCROLL_THRESHOLD_Y = SCREEN_HEIGHT * 0.4
@@ -34,12 +35,10 @@ BULLET_WIDTH = 6
 BULLET_HEIGHT = 14
 BULLET_SPEED = 10.0
 BULLET_COOLDOWN_FRAMES = 10
-LAND_TMAX = 100         # landing prediction: frames simulated when predicting a landing; no landing within this = 'unreachable this jump'
-LAND_TOLERANCE = 40.0   # landing prediction: horizontal center distance (px) that already counts as 'above the platform' (half player + smallest half platform width)
 PROGRESS_MARGIN = 10.0  # px a new highest point must beat the old one by to count as progress
 PLATFORMS_BELOW, PLATFORMS_ABOVE = 3, 2    # observation slots: the platforms nearest below the feet, then nearest above (nearest first)
 MONSTERS_BELOW, MONSTERS_ABOVE = 1, 2
-OBSERVATION_LENGTH = 2 + 3 * (PLATFORMS_BELOW + PLATFORMS_ABOVE) + 2 * (MONSTERS_BELOW + MONSTERS_ABOVE) + 2 * (PLATFORMS_BELOW + PLATFORMS_ABOVE)    # 33
+OBSERVATION_LENGTH = 3 + 3 * (PLATFORMS_BELOW + PLATFORMS_ABOVE) + 2 * (MONSTERS_BELOW + MONSTERS_ABOVE)    # 24
 
 
 class SprudelJumpEnv:
@@ -59,7 +58,7 @@ class SprudelJumpEnv:
         None disables the rule.
         seed: seeds this env's own random generator (platform/monster layout) at every
         reset(), so the same seed gives the same level. None = a fresh random level.
-        The observation is _getState's 33 floats (layout below its definition).'''
+        The observation is _getState's 24 floats (layout below its definition).'''
         self.maxFramesWithoutProgress = maxFramesWithoutProgress
         self.seed = seed
         self.steerDeadZone = steerDeadZone    # a steer output within this distance of 0.5 means 'do not move' (STEER_DEAD_ZONE by default)
@@ -80,6 +79,7 @@ class SprudelJumpEnv:
         self.playerX = SCREEN_WIDTH / 2
         self.playerY = SCREEN_HEIGHT / 2
         self.velY = 0.0
+        self.velX = 0.0
         # startHeight: practice mode. totalHeight (which drives spawn difficulty) starts there,
         # but startOffset is subtracted from the returned score, so no points are given for free.
         # zeroFraction: this share of the games (decided by the seeded rng, so the same seed = same decision) starts at 0 like a normal game.
@@ -127,7 +127,8 @@ class SprudelJumpEnv:
         action: [steer, shoot], a 2-element list, both floats in [0.0, 1.0] — this
         comes directly from a 2-output sigmoid neural network, so both MUST be
         exactly this range.
-          - action[0] (steer): 0.0 = full left, 0.5 = no horizontal movement, 1.0 = full right
+          - action[0] (steer): 0.0 = full left, 0.5 = no horizontal movement, 1.0 = full right; the steer sets the speed the
+            player accelerates towards (momentum: the sideways speed follows it with MOMENTUM per frame, no instant turns)
           - action[1] (shoot): > 0.5 fires a bullet this frame (subject to cooldown,
             see Monsters & shooting below). No aiming — always straight up.
 
@@ -152,12 +153,14 @@ class SprudelJumpEnv:
         self.bounced = False
         steer = action[0] if isinstance(action, (list, tuple)) else action
         d = steer - 0.5
-        move = 0.0
+        target = 0.0
         dz = self.steerDeadZone
         if d > dz:
-            move = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
+            target = (d - dz) / (0.5 - dz) * HORIZONTAL_SPEED
         elif d < -dz:
-            move = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
+            target = (d + dz) / (0.5 - dz) * HORIZONTAL_SPEED
+        self.velX += MOMENTUM * (target - self.velX)
+        move = self.velX
         self.playerX += move
         self.pathSum += abs(move)
         self.signedSum += move
@@ -282,23 +285,18 @@ class SprudelJumpEnv:
 
     def _getState(self):
         '''
-        Builds the 33-float observation vector, all values pre-normalized to
+        Builds the 24-float observation vector, all values pre-normalized to
         roughly [-1, 1] or [0, 1] so it can be fed straight into a network.
         Positions are relative to the player's FEET (what lands on platforms)
         and horizontal CENTER. Every slot has a fixed meaning (nothing jumps to another slot when two things swap distance rank):
           [0]    playerX, normalized by SCREEN_WIDTH
           [1]    velY, normalized by MAX_FALL_SPEED (clamped to [-1, 1])
-          [2:17] 5 platform slots, 3 floats each: (relative x of the platform center, wrap-aware, signed relative y, is-breakable):
+          [2]    velX, normalized by HORIZONTAL_SPEED (the sideways momentum, in [-1, 1])
+          [3:18] 5 platform slots, 3 floats each: (relative x of the platform center, wrap-aware, signed relative y, is-breakable):
                  the 3 nearest BELOW the feet (nearest first), then the 2 nearest ABOVE (nearest first).
                  relative y > 0 = platform above the feet, < 0 = below. Missing slots: [0.0, -1.0, 0.0] (below) / [0.0, 1.0, 0.0] (above).
-          [17:23] 3 monster slots, 2 floats each: (relative x of the monster center, signed relative y): the nearest below, then the 2 nearest above.
+          [18:24] 3 monster slots, 2 floats each: (relative x of the monster center, signed relative y): the nearest below, then the 2 nearest above.
                  Missing slots: [0.0, -1.0] / [0.0, 1.0].
-          [23:33] landing prediction per platform slot (same order as above), [T, r]:
-                 T = frames until the feet land on that platform if the player just keeps falling/rising on the current parabola
-                 (vertical motion does not depend on steering), / LAND_TMAX; 1.0 = no landing within LAND_TMAX frames (e.g. the apex is below the platform).
-                 r = steering needed / steering available: max(0, |dx| - LAND_TOLERANCE) / (HORIZONTAL_SPEED * frames),
-                 clipped to [0, 2] and / 2, so r < 0.5 means the platform is still reachable at full steering; 1.0 for unreachable platforms.
-                 Empty slots: T 1.0, r 1.0.
         Bullets are NOT included - deliberately left out of state.
         Relative x accounts for the horizontal screen wrap: it is the SHORTER way
         around (through the edge if that is closer), so it lies in [-0.5, 0.5].
@@ -308,7 +306,7 @@ class SprudelJumpEnv:
         feet = self.playerY + PLAYER_HEIGHT
         centerX = self.playerX + PLAYER_WIDTH / 2
         vy = self.velY / MAX_FALL_SPEED
-        state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy)]
+        state = [self.playerX / SCREEN_WIDTH, -1.0 if vy < -1.0 else (1.0 if vy > 1.0 else vy), self.velX / HORIZONTAL_SPEED]
         visiblePlatforms = [p for p in self.platforms if p[1] + PLATFORM_HEIGHT > 0]    # only what is on the screen (a human cannot see above the top edge)
         below = sorted((p for p in visiblePlatforms if p[1] >= feet), key=lambda p: p[1])[:PLATFORMS_BELOW]     # nearest first (smallest y >= feet)
         above = sorted((p for p in visiblePlatforms if p[1] < feet), key=lambda p: -p[1])[:PLATFORMS_ABOVE]
@@ -325,7 +323,6 @@ class SprudelJumpEnv:
                 state.append(1.0 if p[3] else 0.0)
             for _ in range(n - len(group)):
                 state.extend(pad)
-        platBelow, platAbove = below, above
         visibleMonsters = [m for m in self.monsters if m[1] + MONSTER_HEIGHT > 0]
         below = sorted((m for m in visibleMonsters if m[1] >= feet), key=lambda m: m[1])[:MONSTERS_BELOW]
         above = sorted((m for m in visibleMonsters if m[1] < feet), key=lambda m: -m[1])[:MONSTERS_ABOVE]
@@ -341,37 +338,4 @@ class SprudelJumpEnv:
                 state.append(-1.0 if ry < -1.0 else (1.0 if ry > 1.0 else ry))
             for _ in range(n - len(group)):
                 state.extend(pad)
-        for p in platBelow + [None] * (PLATFORMS_BELOW - len(platBelow)) + platAbove + [None] * (PLATFORMS_ABOVE - len(platAbove)):
-            self._landingFeatures(state, p, feet, centerX)
         return state
-
-    def _landingFeatures(self, state, p, feet, centerX):
-        '''Landing prediction [T, r] of one platform slot (see _getState); p = None for an empty slot.'''
-        if p is None:
-            state.extend((1.0, 1.0))
-            return
-        # vertical motion is independent of steering: simulate it frame by frame, exactly like step() (gravity, then position)
-        v = self.velY
-        rel = feet - p[1]
-        frames = 0
-        for t in range(1, LAND_TMAX + 1):
-            v = min(v + GRAVITY, MAX_FALL_SPEED)
-            prev = rel
-            rel += v
-            if v > 0 and prev <= 0 <= rel:
-                frames = t
-                break
-        if frames == 0:
-            state.extend((1.0, 1.0))
-            return
-        dx = p[0] + p[2] / 2 - centerX
-        if dx > HALF_WIDTH:
-            dx -= SCREEN_WIDTH
-        elif dx < -HALF_WIDTH:
-            dx += SCREEN_WIDTH
-        need = abs(dx) - LAND_TOLERANCE
-        if need < 0.0:
-            need = 0.0
-        r = need / (HORIZONTAL_SPEED * frames)
-        state.append(frames / LAND_TMAX)
-        state.append((2.0 if r > 2.0 else r) / 2.0)
