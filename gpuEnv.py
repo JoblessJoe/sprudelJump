@@ -90,7 +90,8 @@ for _name in WANTED:
 NIN = NS["OBSERVATION_LENGTH"]
 NPL = NS["PLATFORMS_BELOW"] + NS["PLATFORMS_ABOVE"]
 NMO = NS["MONSTERS_BELOW"] + NS["MONSTERS_ABOVE"]
-NH = NIN    # hidden width of the network = input size (24-24-24-24-2; the kernel's local arrays need it at compile time)
+NH = int(os.environ.get("SPRUDEL_GPU_HIDDEN", NIN))    # hidden width (all 3 hidden layers); the kernel's local arrays need it at compile time,
+                                                     # so it is set per process before the import (nightRun: from the phase's hidden sizes; default = input size)
 (PX, PY, VY, TOTAL, OFFSET, BEST, MMULT, TOPY, SHOTS, SHOTS_FREE, STEER_VAR, LAST_STEER, DECISIONS, HITS, DETOUR, PATH_SUM, SIGNED_SUM,
  DEV_N, DEV_SQ, DEV_TD, DEVIATION, DEAD_ZONE) = (NS[n] for n in ("PX", "PY", "VY", "TOTAL", "OFFSET", "BEST", "MMULT", "TOPY", "SHOTS", "SHOTS_FREE", "STEER_VAR", "LAST_STEER",
                                                      "DECISIONS", "HITS", "DETOUR", "PATH_SUM", "SIGNED_SUM", "DEV_N", "DEV_SQ", "DEV_TD", "DEVIATION", "DEAD_ZONE"))
